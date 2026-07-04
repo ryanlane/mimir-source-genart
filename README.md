@@ -29,6 +29,10 @@ Six composition engines, all available in both styles (`auto` picks per piece):
 - `beams` — Signal Beams: sharp-angle rays fanning from the frame edges
 - `interference` — Standing Waves: wavefronts from point sources weaving real moiré interference fringes; animated, the waves travel outward
 - `flora` — Quiet Meadow: abstract nature scene — layered noise hills, a low sun, swaying botanical sprigs and drifting birds
+- `truchet` — Truchet Maze: quarter-circle arc tiles weaving endless paths; animated, tiles turn in place and rewire the maze
+- `contours` — Contour Map: marching-squares elevation lines over a noise heightfield; animated, the contours flow like a rising tide
+- `harmonograph` — Harmonograph: decaying detuned pendulum curves in fine plotter ink, continuously re-blooming in animation
+- `glyphrain` — Glyph Rain: falling streak columns at three parallax speeds — literal Matrix rain in the phosphor style
 
 ## Output modes
 

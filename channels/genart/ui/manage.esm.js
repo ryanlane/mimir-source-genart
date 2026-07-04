@@ -13,6 +13,8 @@ const ALGO_LABELS = {
   auto: 'Auto (per piece)', arches: 'Arch Study', flowfield: 'Sand Currents',
   inkweave: 'Ink Weave', orbits: 'Orbit Rhythm', tatami: 'Tatami Grid', beams: 'Signal Beams',
   interference: 'Standing Waves', flora: 'Quiet Meadow',
+  truchet: 'Truchet Maze', contours: 'Contour Map',
+  harmonograph: 'Harmonograph', glyphrain: 'Glyph Rain',
 };
 
 const STYLES = `

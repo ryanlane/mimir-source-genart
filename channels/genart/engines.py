@@ -69,6 +69,20 @@ def _osc(phase: float, offset: float = 0.0) -> float:
     return math.sin(TWO_PI * (phase + offset))
 
 
+def _pulse(phase: float, offset: float, window: float) -> float:
+    """One smooth 0→1 transition per loop, then hold at 1.
+
+    Used for motions where the end state is visually identical to the start
+    (e.g. a 180° turn of a symmetric motif) — each element fires once per
+    loop inside its own window, and the wrap is seamless because held-at-1
+    looks exactly like 0."""
+    t = (phase - offset) % 1.0
+    if t >= window:
+        return 1.0
+    u = t / window
+    return u * u * (3.0 - 2.0 * u)
+
+
 # ── Engine: arches ───────────────────────────────────────────────────────────
 
 def arches(rng: random.Random, style: Style, w: int, h: int,
@@ -579,6 +593,280 @@ def flora(rng: random.Random, style: Style, w: int, h: int,
     return plates
 
 
+# ── Engine: truchet ──────────────────────────────────────────────────────────
+
+def truchet(rng: random.Random, style: Style, w: int, h: int,
+            phase: float, density: float) -> list[Plate]:
+    """Truchet tiling — quarter-circle arc tiles weaving endless paths.
+
+    Each tile holds two arcs in one of two orientations; adjacent tiles
+    connect into winding labyrinths. A fraction of tiles turn 180° once
+    per loop (motif-symmetric, so the loop closes), continuously rewiring
+    the maze.
+    """
+    d = density * style.density_bias
+    across = max(4, round(rng.uniform(5, 8) * max(0.75, math.sqrt(d))))
+    ts = min(w, h) / across
+    cols, rows = int(w / ts) + 1, int(h / ts) + 1
+    ox, oy = (w - cols * ts) / 2, (h - rows * ts) / 2
+
+    line_mask, line_draw = _mask(w, h)
+    ink_masks: dict[int, Image.Image] = {}
+    ink_draws: dict[int, ImageDraw.ImageDraw] = {}
+    hairline = max(1, round(0.0016 * min(w, h)))
+    corner_base = {  # corner position → angular range of the inside arc
+        (0, 0): 0, (1, 0): 90, (1, 1): 180, (0, 1): 270,
+    }
+
+    for r in range(rows):
+        for c in range(cols):
+            x0, y0 = ox + c * ts, oy + r * ts
+            xc, yc = x0 + ts / 2, y0 + ts / 2
+            state = rng.random() < 0.5
+            kind = rng.random()
+
+            # Sparse filled quarter-disc accents (static — a 180° turn of a
+            # single disc is not motif-symmetric).
+            if kind < 0.06:
+                ink = rng.choice([0, 1, 2])
+                if ink not in ink_masks:
+                    ink_masks[ink], ink_draws[ink] = _mask(w, h)
+                cx_, cy_ = rng.choice([(0, 0), (1, 0), (1, 1), (0, 1)])
+                base = corner_base[(cx_, cy_)]
+                px, py = x0 + cx_ * ts, y0 + cy_ * ts
+                ink_draws[ink].pieslice([px - ts / 2, py - ts / 2, px + ts / 2, py + ts / 2],
+                                        base, base + 90, fill=255)
+                continue
+
+            thick = rng.random() < 0.16
+            if thick:
+                ink = rng.choice([0, 1, 2])
+                if ink not in ink_masks:
+                    ink_masks[ink], ink_draws[ink] = _mask(w, h)
+                dr, lw = ink_draws[ink], max(2, round(ts * 0.24))
+            else:
+                dr, lw = line_draw, hairline
+
+            theta = 0.0
+            if rng.random() < 0.3:  # rotating tiles
+                theta = 180.0 * _pulse(phase, rng.random(), 0.14)
+            corners = [(0, 0), (1, 1)] if state else [(1, 0), (0, 1)]
+            th = math.radians(theta)
+            ca, sa = math.cos(th), math.sin(th)
+            for cx_, cy_ in corners:
+                base = corner_base[(cx_, cy_)]
+                px, py = x0 + cx_ * ts, y0 + cy_ * ts
+                dx, dy = px - xc, py - yc
+                nx = xc + dx * ca - dy * sa
+                ny = yc + dx * sa + dy * ca
+                dr.arc([nx - ts / 2, ny - ts / 2, nx + ts / 2, ny + ts / 2],
+                       base + theta, base + theta + 90, fill=255, width=lw)
+
+    plates: list[Plate] = [(ink, m, 0.95) for ink, m in ink_masks.items()]
+    plates.append((style.line_index, line_mask, 0.85))
+    return plates
+
+
+# ── Engine: contours ─────────────────────────────────────────────────────────
+
+def contours(rng: random.Random, style: Style, w: int, h: int,
+             phase: float, density: float) -> list[Plate]:
+    """Topographic contours of a noise heightfield (marching squares).
+
+    Hairline elevation lines with every few levels drawn heavy in ink, and
+    the lowest basin filled as a soft wash. Animated, the elevation set
+    drifts one level-spacing per loop, so contours flow like a rising tide.
+    """
+    d = density * style.density_bias
+    noise = _value_noise(rng)
+    gw = 104
+    gh = max(10, round(gw * h / max(1, w)))
+    f1 = rng.uniform(1.7, 2.8)
+    off = rng.uniform(0, 60)
+    aspect = gh / gw
+
+    field: list[list[float]] = []
+    for gy in range(gh + 1):
+        row = []
+        for gx in range(gw + 1):
+            u, v = gx / gw, gy / gh * aspect
+            val = noise(f1 * u, f1 * v + off) + 0.45 * noise(2.6 * f1 * u + 17, 2.6 * f1 * v + off + 9)
+            row.append(val)
+        field.append(row)
+    flat = [v for row in field for v in row]
+    lo, hi = min(flat), max(flat)
+    span = (hi - lo) or 1.0
+    field = [[(v - lo) / span for v in row] for row in field]
+
+    n_levels = max(6, round(9 * d))
+    spacing = 1.0 / (n_levels + 1)
+    toff = spacing * phase  # one spacing per loop → the level set maps to itself
+    chunky_every = rng.choice([3, 4])
+    hairline = max(1, round(0.0016 * min(w, h)))
+    cw, chh = w / gw, h / gh
+
+    line_mask, line_draw = _mask(w, h)
+    ink_masks: dict[int, Image.Image] = {}
+    ink_draws: dict[int, ImageDraw.ImageDraw] = {}
+
+    def lerp(pa: float, pb: float, t: float) -> float:
+        return (t - pa) / (pb - pa) if pb != pa else 0.5
+
+    for li in range(n_levels):
+        t = (li + 1) * spacing + toff
+        if t >= 1.0:
+            t -= 1.0 + spacing  # wrapped level re-enters at the bottom
+        if not (0.0 < t < 1.0):
+            continue
+        if li % chunky_every == chunky_every - 1:
+            ink = [0, 1, 2][li % 3]
+            if ink not in ink_masks:
+                ink_masks[ink], ink_draws[ink] = _mask(w, h)
+            dr, lw = ink_draws[ink], max(2, hairline * 3)
+        else:
+            dr, lw = line_draw, hairline
+        for gy in range(gh):
+            for gx in range(gw):
+                a = field[gy][gx]
+                b = field[gy][gx + 1]
+                c = field[gy + 1][gx + 1]
+                e = field[gy + 1][gx]
+                case = (a > t) | ((b > t) << 1) | ((c > t) << 2) | ((e > t) << 3)
+                if case in (0, 15):
+                    continue
+                x0, y0 = gx * cw, gy * chh
+                top = (x0 + cw * lerp(a, b, t), y0)
+                right = (x0 + cw, y0 + chh * lerp(b, c, t))
+                bottom = (x0 + cw * lerp(e, c, t), y0 + chh)
+                left = (x0, y0 + chh * lerp(a, e, t))
+                segs = {
+                    1: [(left, top)], 2: [(top, right)], 3: [(left, right)],
+                    4: [(right, bottom)], 5: [(left, top), (right, bottom)],
+                    6: [(top, bottom)], 7: [(left, bottom)],
+                    8: [(bottom, left)], 9: [(top, bottom)],
+                    10: [(top, right), (bottom, left)], 11: [(right, bottom)],
+                    12: [(left, right)], 13: [(top, right)], 14: [(left, top)],
+                }[case]
+                for p0, p1 in segs:
+                    dr.line([p0, p1], fill=255, width=lw)
+
+    # Basin wash: fill below the lowest active level as a soft plate.
+    basin_t = spacing + toff
+    coarse = Image.frombytes(
+        "L", (gw + 1, gh + 1),
+        bytes(255 if v < basin_t else 0 for row in field for v in row))
+    basin = coarse.resize((w, h), Image.BICUBIC)
+    plates: list[Plate] = [(rng.choice([0, 1, 2]), basin, 0.55)]
+    plates.extend((ink, m, 0.9) for ink, m in ink_masks.items())
+    plates.append((style.line_index, line_mask, 0.85))
+    return plates
+
+
+# ── Engine: harmonograph ─────────────────────────────────────────────────────
+
+def harmonograph(rng: random.Random, style: Style, w: int, h: int,
+                 phase: float, density: float) -> list[Plate]:
+    """Harmonograph — decaying pendulum curves in fine ink.
+
+    Two detuned oscillators per axis trace the classic precessing Lissajous
+    bloom. The inter-axis phase advances one full cycle per loop, so the
+    figure continuously re-blooms without a seam.
+    """
+    d = density * style.density_bias
+    n_curves = 2 + (rng.random() < 0.5 * d)
+    cx, cy = w / 2, h / 2
+    pairs = [(2, 3), (3, 4), (3, 5), (2, 5), (4, 5)]
+
+    plates: list[Plate] = []
+    hairline = max(1, round(0.0015 * min(w, h)))
+
+    for ci in range(n_curves):
+        a, b = rng.choice(pairs)
+        if rng.random() < 0.5:
+            a, b = b, a
+        scale = rng.uniform(0.9, 1.02) * (1.0 - 0.08 * ci)
+        ax = 0.45 * w * scale
+        ay = 0.45 * h * scale
+        det = rng.uniform(0.006, 0.02)
+        decay = rng.uniform(0.010, 0.028)
+        p = [rng.uniform(0, TWO_PI) for _ in range(4)]
+        total_t = rng.uniform(9, 14) * math.pi
+        steps = 2400
+        pts = []
+        for i in range(steps):
+            t = total_t * i / (steps - 1)
+            e = math.exp(-decay * t)
+            x = cx + ax * e * (0.72 * math.sin(a * t + p[0] + TWO_PI * phase)
+                               + 0.28 * math.sin((a + det) * t + p[1]))
+            y = cy + ay * e * (0.72 * math.sin(b * t + p[2])
+                               + 0.28 * math.sin((b + det) * t + p[3]))
+            pts.append((x, y))
+        m, dr = _mask(w, h)
+        last = ci == n_curves - 1
+        lw = hairline if last else max(2, hairline * rng.randint(2, 3))
+        dr.line(pts, fill=255, width=lw, joint="curve")
+        if last:
+            plates.append((style.line_index, m, 0.85))
+        else:
+            plates.append((ci % 3, m, 0.7))
+
+    return plates
+
+
+# ── Engine: glyphrain ────────────────────────────────────────────────────────
+
+def glyphrain(rng: random.Random, style: Style, w: int, h: int,
+              phase: float, density: float) -> list[Plate]:
+    """Falling streak columns — abstract rain, or Matrix rain in phosphor.
+
+    Columns carry streaks at three integer speed tiers (fast streaks print
+    bright, slow ones dim — cheap depth). Each tier travels a whole number
+    of frame-heights per loop, wrapping cylindrically, so the loop closes.
+    """
+    d = density * style.density_bias
+    pitch = min(w, h) / rng.uniform(26, 38)
+    cols = int(w / pitch) + 1
+    lw = max(1, round(pitch * 0.3))
+    tier_ink = {3: 0, 2: 1, 1: 2}  # fast → brightest palette slot
+
+    ink_masks: dict[int, Image.Image] = {}
+    ink_draws: dict[int, ImageDraw.ImageDraw] = {}
+    head_mask, head_draw = _mask(w, h)
+
+    def seg(dr: ImageDraw.ImageDraw, x: float, y_top: float, y_bot: float) -> None:
+        """Draw a vertical segment on the h-cylinder (wraps at the edges)."""
+        y_top %= h
+        y_bot = y_top + (y_bot - y_top)
+        if y_bot <= h:
+            dr.line([(x, y_top), (x, y_bot)], fill=255, width=lw)
+        else:
+            dr.line([(x, y_top), (x, h)], fill=255, width=lw)
+            dr.line([(x, 0), (x, y_bot - h)], fill=255, width=lw)
+
+    for c in range(cols):
+        if rng.random() < 0.2:  # breathing room between columns
+            continue
+        x = (c + 0.5) * pitch + rng.uniform(-0.15, 0.15) * pitch
+        v = rng.choice([1, 1, 2, 2, 2, 3])
+        ink = tier_ink[v]
+        if ink not in ink_masks:
+            ink_masks[ink], ink_draws[ink] = _mask(w, h)
+        n_streaks = 1 + (rng.random() < 0.45 * d)
+        for _ in range(n_streaks):
+            length = rng.uniform(0.1, 0.3) * h * (0.55 + 0.22 * v)
+            head_y = (rng.uniform(0, h) + v * h * phase) % h
+            seg(ink_draws[ink], x, head_y - length, head_y)
+            hr = lw * 1.1
+            head_draw.ellipse([x - hr, head_y - hr, x + hr, head_y + hr], fill=255)
+
+    plates: list[Plate] = []
+    for ink in (2, 1, 0):  # slow/dim behind, fast/bright in front
+        if ink in ink_masks:
+            plates.append((ink, ink_masks[ink], 0.62 + 0.13 * (2 - ink)))
+    plates.append((style.accent_index, head_mask, 1.0))
+    return plates
+
+
 # ── Registry ─────────────────────────────────────────────────────────────────
 
 ENGINES: dict[str, Callable[..., list[Plate]]] = {
@@ -590,6 +878,10 @@ ENGINES: dict[str, Callable[..., list[Plate]]] = {
     "beams":        beams,
     "interference": interference,
     "flora":        flora,
+    "truchet":      truchet,
+    "contours":     contours,
+    "harmonograph": harmonograph,
+    "glyphrain":    glyphrain,
 }
 
 ENGINE_INFO: list[dict[str, str]] = [
@@ -609,6 +901,14 @@ ENGINE_INFO: list[dict[str, str]] = [
      "description": "Wavefronts from point sources weaving interference fringes"},
     {"id": "flora",     "name": "Quiet Meadow",
      "description": "Layered hills, a low sun, and swaying botanical sprigs"},
+    {"id": "truchet",   "name": "Truchet Maze",
+     "description": "Quarter-circle arc tiles weaving endless winding paths"},
+    {"id": "contours",  "name": "Contour Map",
+     "description": "Topographic elevation lines over a noise heightfield"},
+    {"id": "harmonograph", "name": "Harmonograph",
+     "description": "Decaying pendulum curves in fine plotter ink"},
+    {"id": "glyphrain", "name": "Glyph Rain",
+     "description": "Falling streak columns — Matrix rain in phosphor"},
 ]
 
 

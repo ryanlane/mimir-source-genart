@@ -2,7 +2,7 @@
   "id": "com.mimir.genart",
   "name": "Generative Art",
   "description": "Gallery-grade algorithmic art rendered locally — no external APIs. Two print styles (Bauhaus × Wabi-Sabi giclée, 1960s constructivist risograph) across six composition algorithms, with static PNG output for e-ink and seamless animated WebP loops for LCD/OLED displays.",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "type": "embedded",
   "entry_point": "channel.py",
   "class_name": "GenArtChannel",
@@ -45,7 +45,7 @@
         },
         "algorithm": {
           "type": "string",
-          "enum": ["auto", "arches", "flowfield", "inkweave", "orbits", "tatami", "beams", "interference", "flora"],
+          "enum": ["auto", "arches", "flowfield", "inkweave", "orbits", "tatami", "beams", "interference", "flora", "truchet", "contours", "harmonograph", "glyphrain"],
           "title": "Algorithm",
           "description": "Composition engine — auto picks per piece",
           "default": "auto"
