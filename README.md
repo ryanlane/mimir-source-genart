@@ -9,6 +9,13 @@ Pillow + NumPy. No external APIs, no keys, works offline.
 |---|---|
 | **Kyoto Bauhaus** (`wabi`) | Bauhaus structure with a Wabi-Sabi finish — soft geometric arches, sand-textured curves, fine ink lines. Muted terracotta, raw linen oat, deep charcoal, soft sage on heavyweight cotton paper with giclée grain. |
 | **Riso Constructivist '66** (`constructivist`) | Bold 1960s constructivism — hard-edge geometry, mathematical grids, rhythmic curves and sharp angles. Mustard, deep teal, burnt orange risograph inks overprinted on warm cream with registration error and tactile grain. |
+| **Phosphor Terminal** (`phosphor`) | Every element rebuilt from ASCII characters on a near-black CRT — a glyph density ramp in glowing Mimir green, with scanlines and phosphor bloom. |
+| **Blueprint Cyanotype** (`blueprint`) | Draftsman's cyanotype — pale washes and near-white line work on deep Prussian blue paper with brush dropout and sun-faded vignette. |
+| **Neon Dusk** (`neon`) | Synthwave — hot pink, electric cyan and violet light-forms blooming on deep indigo. Made for OLED; pairs well with animated output. |
+
+Light-emitting styles (`phosphor`, `blueprint`, `neon`) composite with a
+*screen* blend (light adds up) instead of the print styles' transmittance
+multiply (ink soaks in).
 
 ## Algorithms
 

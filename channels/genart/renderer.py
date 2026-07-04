@@ -22,7 +22,7 @@ from __future__ import annotations
 import io
 import random
 
-from PIL import Image, ImageChops, ImageFilter
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 from .engines import ENGINES, pick_engine
 from .styles import Style, get_style
@@ -54,6 +54,79 @@ def _blob_noise(rng: random.Random, w: int, h: int, cells: int) -> Image.Image:
     gh = max(2, round(cells * h / max(1, w)))
     img = _noise_image(rng, gw, gh).resize((w, h), Image.BICUBIC)
     return img.point(lambda v: (v * v) // 255)
+
+
+# ── ASCII render mode ────────────────────────────────────────────────────────
+
+_MONO_FONT_PATHS = (
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+    "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+)
+_font_cache: dict[int, ImageFont.ImageFont] = {}
+_glyph_cache: dict[tuple[str, int, int], Image.Image] = {}
+
+
+def _mono_font(size: int):
+    font = _font_cache.get(size)
+    if font is None:
+        for path in _MONO_FONT_PATHS:
+            try:
+                font = ImageFont.truetype(path, size)
+                break
+            except Exception:
+                continue
+        if font is None:
+            try:
+                font = ImageFont.load_default(size=size)  # Pillow >= 10
+            except TypeError:
+                font = ImageFont.load_default()
+        _font_cache[size] = font
+    return font
+
+
+def _glyph_tile(char: str, cw: int, ch: int) -> Image.Image:
+    """One character pre-rendered as an L tile — pasted thousands of times
+    per frame, so it must not be re-rasterized per cell."""
+    key = (char, cw, ch)
+    tile = _glyph_cache.get(key)
+    if tile is None:
+        tile = Image.new("L", (cw, ch), 0)
+        draw = ImageDraw.Draw(tile)
+        font = _mono_font(ch)
+        try:
+            bbox = draw.textbbox((0, 0), char, font=font)
+            x = (cw - (bbox[2] - bbox[0])) // 2 - bbox[0]
+            y = (ch - (bbox[3] - bbox[1])) // 2 - bbox[1]
+        except Exception:
+            x, y = 0, 0
+        draw.text((x, y), char, fill=255, font=font)
+        _glyph_cache[key] = tile
+    return tile
+
+
+def _asciify(mask: Image.Image, style: Style, w: int, h: int) -> Image.Image:
+    """Rebuild an ink plate as a character grid — cell coverage picks the
+    glyph from the style's density ramp, so shapes keep their silhouettes
+    while becoming pure ASCII."""
+    ch = max(6, round(min(w, h) / style.ascii_rows))
+    cw = max(4, round(ch * 0.62))
+    cols, rows = max(1, w // cw), max(1, h // ch)
+    grid = mask.resize((cols, rows), Image.BOX)
+    ramp = style.ascii_ramp
+    n = len(ramp)
+    out = Image.new("L", (w, h), 0)
+    data = grid.load()
+    for r in range(rows):
+        for c in range(cols):
+            idx = data[c, r] * n // 256
+            if idx <= 0:
+                continue
+            char = ramp[idx]
+            if char == " ":
+                continue
+            out.paste(_glyph_tile(char, cw, ch), (c * cw, r * ch))
+    return out
 
 
 class _Materials:
@@ -101,9 +174,17 @@ class _Materials:
         self.vignette: Image.Image | None = None
         if style.vignette > 0:
             rad = Image.radial_gradient("L").resize((w, h), Image.BILINEAR)
-            vig = style.vignette * 0.09
+            vig = style.vignette * (0.35 if style.blend == "screen" else 0.09)
             self.vignette = rad.point(
                 lambda v: round(255 * (1.0 - vig * (v / 255.0) ** 2)))
+
+        # CRT scanlines: darken every third row, strength per style.
+        self.scanlines: Image.Image | None = None
+        if style.scanlines > 0:
+            dim = 255 - round(110 * style.scanlines)
+            row_vals = bytes(dim if y % 3 == 2 else 255 for y in range(h))
+            col = Image.frombytes("L", (1, h), row_vals)
+            self.scanlines = col.resize((w, h), Image.NEAREST)
 
 
 def _apply_centered_add(canvas: Image.Image, delta: Image.Image) -> Image.Image:
@@ -129,7 +210,9 @@ def render_frame(style: Style, algorithm: str, seed: int, w: int, h: int,
     for plate_idx, (ink_idx, mask, coverage) in enumerate(plates):
         if mask.size != (w, h):
             mask = mask.resize((w, h), Image.LANCZOS)
-        if style.edge_blur > 0:
+        if style.render_mode == "ascii":
+            mask = _asciify(mask, style, w, h)
+        elif style.edge_blur > 0:
             mask = mask.filter(ImageFilter.GaussianBlur(style.edge_blur))
 
         dx, dy = mat.offsets[plate_idx % _MAX_PLATES]
@@ -142,10 +225,23 @@ def render_frame(style: Style, algorithm: str, seed: int, w: int, h: int,
         if alpha < 1.0:
             mask = mask.point(lambda v: round(v * alpha))
 
-        # Transmittance overprint: where the plate covers, the canvas is
-        # multiplied by the ink color — paper and prior inks show through.
-        inked = ImageChops.multiply(canvas, Image.new("RGB", (w, h), style.inks[ink_idx]))
-        canvas = Image.composite(inked, canvas, mask)
+        ink_solid = Image.new("RGB", (w, h), style.inks[ink_idx])
+        if style.blend == "screen":
+            # Light emission: inks add up toward white where they overlap.
+            mixed = ImageChops.screen(canvas, ink_solid)
+        else:
+            # Transmittance overprint: where the plate covers, the canvas is
+            # multiplied by the ink color — paper and prior inks show through.
+            mixed = ImageChops.multiply(canvas, ink_solid)
+        canvas = Image.composite(mixed, canvas, mask)
+
+    # ── Light finish (before paper texture) ──────────────────────────────
+    if style.glow > 0:
+        bloom = canvas.filter(ImageFilter.GaussianBlur(max(2.0, min(w, h) * 0.012)))
+        bloom = bloom.point(lambda v: round(v * style.glow))
+        canvas = ImageChops.screen(canvas, bloom)
+    if mat.scanlines is not None:
+        canvas = ImageChops.multiply(canvas, mat.scanlines.convert("RGB"))
 
     # ── Paper finish ─────────────────────────────────────────────────────
     if mat.grain is not None:

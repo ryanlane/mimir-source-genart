@@ -4,6 +4,9 @@ const API = () => `${BASE_URL()}/api/channels/com.mimir.genart`;
 const STYLE_META = {
   wabi:           { label: 'Kyoto Bauhaus',           hint: 'Wabi-Sabi giclée · terracotta / oat / charcoal / sage' },
   constructivist: { label: "Riso Constructivist '66", hint: 'Risograph inks · mustard / teal / burnt orange / cream' },
+  phosphor:       { label: 'Phosphor Terminal',       hint: 'ASCII characters · Mimir green on CRT black, scanlines + glow' },
+  blueprint:      { label: 'Blueprint Cyanotype',     hint: 'Pale line work · Prussian blue drafting paper' },
+  neon:           { label: 'Neon Dusk',               hint: 'Synthwave glow · pink / cyan / violet on indigo (OLED)' },
 };
 
 const ALGO_LABELS = {
