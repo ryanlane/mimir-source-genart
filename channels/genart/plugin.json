@@ -1,0 +1,127 @@
+{
+  "id": "com.mimir.genart",
+  "name": "Generative Art",
+  "description": "Gallery-grade algorithmic art rendered locally — no external APIs. Two print styles (Bauhaus × Wabi-Sabi giclée, 1960s constructivist risograph) across six composition algorithms, with static PNG output for e-ink and seamless animated WebP loops for LCD/OLED displays.",
+  "version": "1.0.0",
+  "type": "embedded",
+  "entry_point": "channel.py",
+  "class_name": "GenArtChannel",
+  "icon": "shapes",
+  "author": "Ryan Lane",
+  "tags": ["generative", "art", "algorithmic", "bauhaus", "risograph", "eink", "animated"],
+  "schemaVersion": "2.4",
+  "settingsType": "advanced",
+  "config": {
+    "supports_upload": false,
+    "supports_subchannels": false,
+    "requires_api_key": false
+  },
+  "requirements": {
+    "python": ">=3.9",
+    "dependencies": ["fastapi", "pillow", "numpy"]
+  },
+  "user_data_dirs": ["data"],
+  "settings": {
+    "defaults": {
+      "style": "wabi",
+      "algorithm": "auto",
+      "output_mode": "static",
+      "seed_mode": "refresh",
+      "seed": 1,
+      "density": "balanced",
+      "texture_strength": 100,
+      "frames": 24,
+      "frame_ms": 120
+    },
+    "schema": {
+      "type": "object",
+      "properties": {
+        "style": {
+          "type": "string",
+          "enum": ["wabi", "constructivist"],
+          "title": "Print Style",
+          "description": "wabi = Bauhaus × Wabi-Sabi giclée on cotton paper; constructivist = 1960s risograph inks on cream",
+          "default": "wabi"
+        },
+        "algorithm": {
+          "type": "string",
+          "enum": ["auto", "arches", "flowfield", "inkweave", "orbits", "tatami", "beams"],
+          "title": "Algorithm",
+          "description": "Composition engine — auto picks per piece",
+          "default": "auto"
+        },
+        "output_mode": {
+          "type": "string",
+          "enum": ["static", "animated"],
+          "title": "Output",
+          "description": "static = PNG (use for e-ink); animated = looping WebP (LCD/OLED only)",
+          "default": "static"
+        },
+        "seed_mode": {
+          "type": "string",
+          "enum": ["refresh", "hourly", "daily", "fixed"],
+          "title": "New Piece",
+          "description": "How often a new composition is generated",
+          "default": "refresh"
+        },
+        "seed": {
+          "type": "integer",
+          "title": "Fixed Seed",
+          "description": "Composition number used when New Piece is 'fixed'",
+          "default": 1
+        },
+        "density": {
+          "type": "string",
+          "enum": ["sparse", "balanced", "rich"],
+          "title": "Density",
+          "description": "How much of the frame the composition occupies",
+          "default": "balanced"
+        },
+        "texture_strength": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 200,
+          "title": "Texture Strength",
+          "description": "Paper grain and ink distress, as a percent of the style default",
+          "default": 100
+        },
+        "frames": {
+          "type": "integer",
+          "minimum": 8,
+          "maximum": 60,
+          "title": "Animation Frames",
+          "description": "Frames per loop in animated mode",
+          "default": 24
+        },
+        "frame_ms": {
+          "type": "integer",
+          "minimum": 40,
+          "maximum": 500,
+          "title": "Frame Duration (ms)",
+          "description": "Milliseconds per frame in animated mode",
+          "default": 120
+        }
+      }
+    }
+  },
+  "ui": [
+    {
+      "route": "/genart",
+      "element": "x-genart-manager",
+      "moduleUrl": "/api/channels/com.mimir.genart/ui/manage.esm.js",
+      "nav": {
+        "label": "Generative Art",
+        "icon": "shapes"
+      },
+      "renderMode": "element"
+    }
+  ],
+  "endpoints": [
+    { "path": "/manifest",      "method": "GET",  "description": "Channel manifest" },
+    { "path": "/request-image", "method": "POST", "description": "Render a piece at the requested resolution" },
+    { "path": "/preview",       "method": "GET",  "description": "Small PNG preview for the manage UI" },
+    { "path": "/settings",      "method": "GET",  "description": "Get settings" },
+    { "path": "/settings",      "method": "PUT",  "description": "Update settings" },
+    { "path": "/status",        "method": "GET",  "description": "Last render info, styles, algorithms" }
+  ]
+}

@@ -1,0 +1,464 @@
+"""Composition engines for the Generative Art channel.
+
+An engine is an algorithm that composes a piece as a stack of *ink plates*:
+
+    Plate = (ink_index, mask, coverage)
+
+      ink_index — which palette slot of the active Style to print with
+      mask      — PIL "L" image; 255 = full ink, 0 = bare paper
+      coverage  — 0..1 multiplier on the style's ink opacity
+
+Plates are returned bottom-to-top in print order. Engines draw pure
+composition — all material treatment (edge softness, registration error,
+ink-coverage noise, paper texture) is applied by the renderer according to
+the active Style, so every engine renders correctly in every style.
+
+Engines receive a seeded ``random.Random`` so a given (seed, size) pair is
+fully reproducible, and a cyclic ``phase`` in [0, 1) for animation — all
+motion is periodic in phase so animated loops close seamlessly.
+"""
+from __future__ import annotations
+
+import math
+import random
+from typing import Callable
+
+from PIL import Image, ImageDraw
+
+from .styles import Style
+
+Plate = tuple[int, Image.Image, float]
+
+TWO_PI = math.tau
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+def _mask(w: int, h: int) -> tuple[Image.Image, ImageDraw.ImageDraw]:
+    img = Image.new("L", (w, h), 0)
+    return img, ImageDraw.Draw(img)
+
+
+def _value_noise(rng: random.Random) -> Callable[[float, float], float]:
+    """Smooth 2-D value noise in [0, 1], seeded from *rng*."""
+    perm = list(range(256))
+    rng.shuffle(perm)
+    perm = perm * 2
+
+    def fade(t: float) -> float:
+        return t * t * (3.0 - 2.0 * t)
+
+    def noise(x: float, y: float) -> float:
+        xf0, yf0 = math.floor(x), math.floor(y)
+        xi, yi = int(xf0) & 255, int(yf0) & 255
+        dx, dy = x - xf0, y - yf0
+
+        def corner(cx: int, cy: int) -> float:
+            return perm[perm[cx & 255] + (cy & 255)] / 255.0
+
+        u, v = fade(dx), fade(dy)
+        top = corner(xi, yi) * (1 - u) + corner(xi + 1, yi) * u
+        bot = corner(xi, yi + 1) * (1 - u) + corner(xi + 1, yi + 1) * u
+        return top * (1 - v) + bot * v
+
+    return noise
+
+
+def _osc(phase: float, offset: float = 0.0) -> float:
+    """Cyclic oscillator in [-1, 1]; period 1 in phase → seamless loops."""
+    return math.sin(TWO_PI * (phase + offset))
+
+
+# ── Engine: arches ───────────────────────────────────────────────────────────
+
+def arches(rng: random.Random, style: Style, w: int, h: int,
+           phase: float, density: float) -> list[Plate]:
+    """Soft geometric arches on a loose baseline grid.
+
+    Rounded arch forms (Bauhaus doorways) rise from staggered baselines,
+    overlapping where the grid allows; a thin ground rule and one small
+    charcoal accent arch anchor the composition.
+    """
+    d = density * style.density_bias
+    n = max(3, round(4 * d) + rng.randint(0, 2))
+    margin = 0.08 * min(w, h)
+    baseline_lo, baseline_hi = 0.55 * h, 0.92 * h
+
+    color_masks: dict[int, Image.Image] = {}
+    draws: dict[int, ImageDraw.ImageDraw] = {}
+    body_inks = [0, 1, 2]
+
+    def draw_for(ink: int) -> ImageDraw.ImageDraw:
+        if ink not in color_masks:
+            color_masks[ink], draws[ink] = _mask(w, h)
+        return draws[ink]
+
+    # Loose columns so arches cluster and overlap rather than scatter.
+    slots = [margin + (w - 2 * margin) * (i + rng.uniform(0.05, 0.85)) / n
+             for i in range(n)]
+    rng.shuffle(slots)
+
+    for i, cx in enumerate(slots):
+        aw = rng.uniform(0.14, 0.34) * w * (1.25 - 0.5 * (d > 1))
+        # The stem needs room below the half-disc cap: keep height ≥ the cap.
+        ah = max(rng.uniform(0.22, 0.55) * h, 0.62 * aw)
+        baseline = rng.uniform(baseline_lo, baseline_hi)
+        bob = 0.012 * h * _osc(phase, i / max(1, n))
+        top = baseline - ah + bob
+        ink = body_inks[i % len(body_inks)]
+        dr = draw_for(ink)
+        x0, x1 = cx - aw / 2, cx + aw / 2
+        # Arch = half-disc cap + rectangular stem.
+        dr.pieslice([x0, top, x1, top + aw], 180, 360, fill=255)
+        dr.rectangle([x0, top + aw / 2, x1, baseline + bob], fill=255)
+
+    # Small accent arch — deliberate, sparse.
+    acc_mask, acc_draw = _mask(w, h)
+    aw = rng.uniform(0.05, 0.09) * w
+    cx = rng.uniform(0.2, 0.8) * w
+    baseline = rng.uniform(baseline_lo, baseline_hi)
+    top = baseline - max(rng.uniform(0.08, 0.16) * h, 0.62 * aw)
+    acc_draw.pieslice([cx - aw / 2, top, cx + aw / 2, top + aw], 180, 360, fill=255)
+    acc_draw.rectangle([cx - aw / 2, top + aw / 2, cx + aw / 2, baseline], fill=255)
+
+    # Ground rule.
+    line_mask, line_draw = _mask(w, h)
+    rule_y = baseline_hi + 0.02 * h
+    lw = max(2, round(0.0022 * min(w, h)))
+    line_draw.line([(margin, rule_y), (w - margin, rule_y)], fill=255, width=lw)
+
+    plates: list[Plate] = [(ink, m, 1.0) for ink, m in color_masks.items()]
+    plates.append((style.accent_index, acc_mask, 1.0))
+    plates.append((style.line_index, line_mask, 0.9))
+    return plates
+
+
+# ── Engine: flowfield ────────────────────────────────────────────────────────
+
+def flowfield(rng: random.Random, style: Style, w: int, h: int,
+              phase: float, density: float) -> list[Plate]:
+    """Flowing algorithmic curves traced through a smooth noise field.
+
+    Fine sand-textured strands in banded ink bundles drift across the frame;
+    the field angle is modulated cyclically so animation loops.
+    """
+    d = density * style.density_bias
+    noise = _value_noise(rng)
+    # A handful of noise cells across the frame gives long dune-like swells;
+    # higher frequencies degrade into per-pixel scribble.
+    ns = rng.uniform(2.2, 4.5) / max(w, h)
+    base_angle = rng.uniform(0, TWO_PI)
+    hard_edge = style.edge_blur < 1.0
+    strands = max(24, round((70 if hard_edge else 210) * d))
+    width_lo, width_hi = ((0.004, 0.010) if hard_edge else (0.0012, 0.0032))
+    step = 0.011 * max(w, h)
+    steps = round(1.35 * max(w, h) / step)
+
+    bundles = [0, 1, 2]
+    masks: dict[int, Image.Image] = {}
+    draws: dict[int, ImageDraw.ImageDraw] = {}
+    for b in bundles:
+        masks[b], draws[b] = _mask(w, h)
+
+    for s in range(strands):
+        band = min(len(bundles) - 1, int(len(bundles) * s / strands))
+        ink = bundles[band]
+        x = rng.uniform(-0.15, 1.15) * w
+        y = (band + rng.uniform(-0.35, 1.35)) / len(bundles) * h
+        pts = [(x, y)]
+        wobble = rng.uniform(0.15, 0.4)
+        for _ in range(steps):
+            a = (base_angle
+                 + (noise(x * ns, y * ns) - 0.5) * 2.6
+                 + wobble * _osc(phase, x / w * 0.5))
+            x += step * math.cos(a)
+            y += step * math.sin(a) * 0.55  # flatten drift into dune-like bands
+            pts.append((x, y))
+        lw = max(1, round(rng.uniform(width_lo, width_hi) * max(w, h)))
+        draws[ink].line(pts, fill=rng.randint(150, 255), width=lw, joint="curve")
+
+    # One fine horizon hairline for structure.
+    line_mask, line_draw = _mask(w, h)
+    yline = rng.uniform(0.2, 0.8) * h
+    line_draw.line([(0.06 * w, yline), (0.94 * w, yline)], fill=255,
+                   width=max(1, round(0.0015 * min(w, h))))
+
+    plates: list[Plate] = [(ink, masks[ink], 0.9) for ink in bundles]
+    plates.append((style.line_index, line_mask, 0.8))
+    return plates
+
+
+# ── Engine: inkweave ─────────────────────────────────────────────────────────
+
+def inkweave(rng: random.Random, style: Style, w: int, h: int,
+             phase: float, density: float) -> list[Plate]:
+    """Intersecting fine ink lines over sparse geometric blocks.
+
+    Two or three families of parallel hairlines cross at deliberate angles;
+    a few filled rectangles and quarter-discs sit beneath the weave on a
+    mathematical grid. Line families slide one spacing per loop.
+    """
+    d = density * style.density_bias
+    diag = math.hypot(w, h)
+
+    # Blocks first (under the lines).
+    block_masks: dict[int, Image.Image] = {}
+    block_draws: dict[int, ImageDraw.ImageDraw] = {}
+    cols, rows = rng.choice([(4, 3), (5, 3), (6, 4)])
+    n_blocks = max(2, round(3 * d) + rng.randint(0, 2))
+    cells = [(c, r) for c in range(cols) for r in range(rows)]
+    rng.shuffle(cells)
+    for c, r in cells[:n_blocks]:
+        ink = rng.choice([0, 1, 2])
+        if ink not in block_masks:
+            block_masks[ink], block_draws[ink] = _mask(w, h)
+        x0, y0 = c / cols * w, r / rows * h
+        x1, y1 = (c + 1) / cols * w, (r + 1) / rows * h
+        pad = 0.08 * (x1 - x0)
+        kind = rng.random()
+        if kind < 0.45:
+            block_draws[ink].rectangle([x0 + pad, y0 + pad, x1 - pad, y1 - pad], fill=255)
+        elif kind < 0.8:
+            side = min(x1 - x0, y1 - y0) - 2 * pad
+            qx, qy = x0 + pad, y0 + pad
+            start, end = rng.choice([(0, 90), (90, 180), (180, 270), (270, 360)])
+            block_draws[ink].pieslice([qx, qy, qx + 2 * side, qy + 2 * side], start, end, fill=255)
+        else:
+            cxc, cyc = (x0 + x1) / 2, (y0 + y1) / 2
+            rr = (min(x1 - x0, y1 - y0) / 2) - pad
+            block_draws[ink].ellipse([cxc - rr, cyc - rr, cxc + rr, cyc + rr], fill=255)
+
+    # Line families.
+    line_mask, line_draw = _mask(w, h)
+    hairline = max(1, round(0.0016 * min(w, h)))
+    n_families = 2 + (rng.random() < 0.35)
+    angles = rng.sample([0, 90, rng.choice([30, 45, 60, 120, 135])], n_families)
+    for fi, ang_deg in enumerate(angles):
+        ang = math.radians(ang_deg)
+        ux, uy = math.cos(ang), math.sin(ang)      # line direction
+        nx, ny = -uy, ux                           # family normal
+        spacing = rng.uniform(0.055, 0.13) * min(w, h) / max(0.6, d)
+        count = int(diag / spacing) + 2
+        slide = spacing * (phase if fi % 2 == 0 else -phase)  # one spacing per loop
+        cx0, cy0 = w / 2, h / 2
+        for k in range(-count // 2, count // 2 + 1):
+            off = k * spacing + slide
+            px, py = cx0 + nx * off, cy0 + ny * off
+            half = diag * rng.uniform(0.2, 0.48)
+            shift = diag * rng.uniform(-0.16, 0.16)
+            p0 = (px + ux * (shift - half), py + uy * (shift - half))
+            p1 = (px + ux * (shift + half), py + uy * (shift + half))
+            lw = hairline * (3 if rng.random() < 0.04 else 1)
+            line_draw.line([p0, p1], fill=255, width=lw)
+
+    plates: list[Plate] = [(ink, m, 0.95) for ink, m in block_masks.items()]
+    plates.append((style.line_index, line_mask, 0.85))
+    return plates
+
+
+# ── Engine: orbits ───────────────────────────────────────────────────────────
+
+def orbits(rng: random.Random, style: Style, w: int, h: int,
+           phase: float, density: float) -> list[Plate]:
+    """Rhythmic concentric arcs around one or two poles.
+
+    Hairline rings alternate with chunky ink arcs in strict radial rhythm;
+    alternate rings counter-rotate a full turn per loop.
+    """
+    d = density * style.density_bias
+    n_centers = 1 if rng.random() < 0.65 else 2
+    line_mask, line_draw = _mask(w, h)
+    ink_masks: dict[int, Image.Image] = {}
+    ink_draws: dict[int, ImageDraw.ImageDraw] = {}
+
+    for ci in range(n_centers):
+        cx = rng.uniform(0.28, 0.72) * w if n_centers == 1 else (0.22 + 0.56 * ci) * w
+        cy = rng.uniform(0.3, 0.7) * h
+        rings = max(6, round(11 * d) + rng.randint(0, 4))
+        r_step = rng.uniform(0.03, 0.05) * min(w, h)
+        r0 = rng.uniform(0.5, 1.4) * r_step
+        chunky_every = rng.choice([3, 4, 5])
+        for k in range(rings):
+            r = r0 + k * r_step * (1 + 0.12 * _osc(phase, k / rings) * 0)  # radius static
+            box = [cx - r, cy - r, cx + r, cy + r]
+            turn = 360.0 * phase * (1 if k % 2 == 0 else -1)   # integer turns → seamless
+            start = rng.uniform(0, 360) + turn
+            sweep = rng.uniform(50, 300)
+            if k % chunky_every == chunky_every - 1:
+                ink = rng.choice([0, 1, 2])
+                if ink not in ink_masks:
+                    ink_masks[ink], ink_draws[ink] = _mask(w, h)
+                bw = max(3, round(r_step * rng.uniform(0.35, 0.6)))
+                ink_draws[ink].arc(box, start, start + sweep, fill=255, width=bw)
+            else:
+                lw = max(1, round(0.0018 * min(w, h)))
+                line_draw.arc(box, start, start + sweep, fill=255, width=lw)
+        # Pole dot.
+        pr = 0.012 * min(w, h)
+        line_draw.ellipse([cx - pr, cy - pr, cx + pr, cy + pr], fill=255)
+
+    plates: list[Plate] = [(ink, m, 1.0) for ink, m in ink_masks.items()]
+    plates.append((style.line_index, line_mask, 0.85))
+    return plates
+
+
+# ── Engine: tatami ───────────────────────────────────────────────────────────
+
+def tatami(rng: random.Random, style: Style, w: int, h: int,
+           phase: float, density: float) -> list[Plate]:
+    """Recursive grid subdivision with disciplined negative space.
+
+    The frame divides at golden-ish ratios; most cells stay bare paper,
+    a few fill with flat geometry, hairline rules trace the grid.
+    """
+    d = density * style.density_bias
+    max_depth = 3 + (d > 0.9) + (d > 1.3)
+    line_mask, line_draw = _mask(w, h)
+    ink_masks: dict[int, Image.Image] = {}
+    ink_draws: dict[int, ImageDraw.ImageDraw] = {}
+    hairline = max(1, round(0.0016 * min(w, h)))
+    margin = 0.06 * min(w, h)
+    fill_p = 0.16 + 0.10 * d
+
+    def fill_cell(x0: float, y0: float, x1: float, y1: float, idx: int) -> None:
+        ink = rng.choice([0, 1, 2, style.accent_index])
+        if ink not in ink_masks:
+            ink_masks[ink], ink_draws[ink] = _mask(w, h)
+        dr = ink_draws[ink]
+        breathe = 1.0 + 0.03 * _osc(phase, idx * 0.17)
+        cw, ch = (x1 - x0), (y1 - y0)
+        pad = 0.06 * min(cw, ch) * breathe
+        bx0, by0, bx1, by1 = x0 + pad, y0 + pad, x1 - pad, y1 - pad
+        kind = rng.random()
+        if kind < 0.4:
+            dr.rectangle([bx0, by0, bx1, by1], fill=255)
+        elif kind < 0.7:
+            side = min(bx1 - bx0, by1 - by0)
+            start, end = rng.choice([(0, 90), (90, 180), (180, 270), (270, 360)])
+            corner = {(0, 90): (bx1 - 2 * side, by1 - 2 * side), (90, 180): (bx0, by1 - 2 * side),
+                      (180, 270): (bx0, by0), (270, 360): (bx1 - 2 * side, by0)}[(start, end)]
+            dr.pieslice([corner[0], corner[1], corner[0] + 2 * side, corner[1] + 2 * side],
+                        start, end, fill=255)
+        else:
+            ccx, ccy = (bx0 + bx1) / 2, (by0 + by1) / 2
+            rr = min(bx1 - bx0, by1 - by0) / 2
+            dr.pieslice([ccx - rr, ccy - rr * 2 + rr, ccx + rr, ccy + rr], 180, 360, fill=255)
+
+    cell_idx = 0
+
+    def divide(x0: float, y0: float, x1: float, y1: float, depth: int) -> None:
+        nonlocal cell_idx
+        cw, ch = x1 - x0, y1 - y0
+        if depth >= max_depth or min(cw, ch) < 0.12 * min(w, h):
+            cell_idx += 1
+            if rng.random() < fill_p:
+                fill_cell(x0, y0, x1, y1, cell_idx)
+            return
+        ratio = rng.choice([0.382, 0.5, 0.618])
+        if (cw > ch) == (rng.random() < 0.85):  # usually split the long side
+            xm = x0 + cw * ratio
+            line_draw.line([(xm, y0), (xm, y1)], fill=255, width=hairline)
+            divide(x0, y0, xm, y1, depth + 1)
+            divide(xm, y0, x1, y1, depth + 1)
+        else:
+            ym = y0 + ch * ratio
+            line_draw.line([(x0, ym), (x1, ym)], fill=255, width=hairline)
+            divide(x0, y0, x1, ym, depth + 1)
+            divide(x0, ym, x1, y1, depth + 1)
+
+    line_draw.rectangle([margin, margin, w - margin, h - margin],
+                        outline=255, width=hairline)
+    divide(margin, margin, w - margin, h - margin, 0)
+
+    plates: list[Plate] = [(ink, m, 0.95) for ink, m in ink_masks.items()]
+    plates.append((style.line_index, line_mask, 0.8))
+    return plates
+
+
+# ── Engine: beams ────────────────────────────────────────────────────────────
+
+def beams(rng: random.Random, style: Style, w: int, h: int,
+          phase: float, density: float) -> list[Plate]:
+    """Sharp-angle beams fanning from edge anchors across the frame.
+
+    Hard triangular rays overlap mid-frame — under risograph overprint the
+    intersections mix into dark compound tones; a large half-disc anchors
+    the geometry.
+    """
+    d = density * style.density_bias
+    n_anchors = 2 + (rng.random() < 0.4 * d)
+    ink_masks: dict[int, Image.Image] = {}
+    ink_draws: dict[int, ImageDraw.ImageDraw] = {}
+
+    edges = ["left", "right", "top", "bottom"]
+    rng.shuffle(edges)
+    for ai in range(n_anchors):
+        edge = edges[ai % len(edges)]
+        if edge == "left":
+            ax, ay = -0.02 * w, rng.uniform(0.15, 0.85) * h
+        elif edge == "right":
+            ax, ay = 1.02 * w, rng.uniform(0.15, 0.85) * h
+        elif edge == "top":
+            ax, ay = rng.uniform(0.15, 0.85) * w, -0.02 * h
+        else:
+            ax, ay = rng.uniform(0.15, 0.85) * w, 1.02 * h
+
+        n_beams = rng.randint(3, 5)
+        toward = math.atan2(h / 2 - ay, w / 2 - ax)
+        spread = rng.uniform(0.5, 1.1)
+        for bi in range(n_beams):
+            ink = (ai + bi) % 3
+            if ink not in ink_masks:
+                ink_masks[ink], ink_draws[ink] = _mask(w, h)
+            a = toward + spread * ((bi / max(1, n_beams - 1)) - 0.5)
+            a += 0.02 * _osc(phase, (ai * 3 + bi) * 0.13)
+            half_w = rng.uniform(0.008, 0.05)
+            reach = 1.45 * math.hypot(w, h)
+            p1 = (ax + reach * math.cos(a - half_w), ay + reach * math.sin(a - half_w))
+            p2 = (ax + reach * math.cos(a + half_w), ay + reach * math.sin(a + half_w))
+            ink_draws[ink].polygon([(ax, ay), p1, p2], fill=255)
+
+    # Half-disc anchor form.
+    acc_mask, acc_draw = _mask(w, h)
+    r = rng.uniform(0.1, 0.2) * min(w, h)
+    cx, cy = rng.uniform(0.3, 0.7) * w, rng.uniform(0.35, 0.65) * h
+    rot = rng.choice([0, 90, 180, 270])
+    acc_draw.pieslice([cx - r, cy - r, cx + r, cy + r], rot, rot + 180, fill=255)
+
+    plates: list[Plate] = [(ink, m, 0.85) for ink, m in ink_masks.items()]
+    plates.append((style.accent_index, acc_mask, 1.0))
+    return plates
+
+
+# ── Registry ─────────────────────────────────────────────────────────────────
+
+ENGINES: dict[str, Callable[..., list[Plate]]] = {
+    "arches":    arches,
+    "flowfield": flowfield,
+    "inkweave":  inkweave,
+    "orbits":    orbits,
+    "tatami":    tatami,
+    "beams":     beams,
+}
+
+ENGINE_INFO: list[dict[str, str]] = [
+    {"id": "arches",    "name": "Arch Study",
+     "description": "Soft geometric arches on a staggered baseline grid"},
+    {"id": "flowfield", "name": "Sand Currents",
+     "description": "Fine algorithmic curves flowing through a noise field"},
+    {"id": "inkweave",  "name": "Ink Weave",
+     "description": "Intersecting fine ink lines over sparse geometric blocks"},
+    {"id": "orbits",    "name": "Orbit Rhythm",
+     "description": "Rhythmic concentric arcs around one or two poles"},
+    {"id": "tatami",    "name": "Tatami Grid",
+     "description": "Recursive golden-ratio subdivision, mostly negative space"},
+    {"id": "beams",     "name": "Signal Beams",
+     "description": "Sharp-angle rays fanning from the frame edges"},
+]
+
+
+def pick_engine(algorithm: str, rng: random.Random) -> str:
+    """Resolve an algorithm setting ('auto' picks per-seed) to an engine id."""
+    if algorithm in ENGINES:
+        return algorithm
+    return rng.choice(sorted(ENGINES.keys()))

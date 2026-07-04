@@ -1,0 +1,4 @@
+fastapi
+pillow
+numpy
+pytest
