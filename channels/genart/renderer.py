@@ -5,10 +5,14 @@ Takes the ink plates an engine composed and prints them in the active style:
   1. Supersampled masks are downscaled (the anti-aliasing pass) and edge-
      softened per style — Wabi-Sabi forms breathe, riso shapes stay hard.
   2. Riso styles offset each plate slightly (organic registration error)
-     and modulate ink coverage with blotchy noise (distressed print look).
+     and modulate ink coverage with speckle noise (distressed print look).
   3. Plates composite onto the paper with a transmittance (overprint) model:
-     overlapping inks multiply the way real translucent print inks do.
+     overlapping inks multiply the way real translucent print inks do —
+     implemented as ImageChops.multiply masked by the plate alpha.
   4. Paper finish: organic grain, cotton fiber streaks, and a soft vignette.
+
+Pure PIL + stdlib on purpose: Pillow ships in the Mimir base image, so the
+plugin renders even when the installer's best-effort `pip install` can't run.
 
 Static output is lossless PNG (crisp on e-ink); animated output is a looping
 animated WebP the Electron display animates natively in an <img> tag.
@@ -18,8 +22,7 @@ from __future__ import annotations
 import io
 import random
 
-import numpy as np
-from PIL import Image, ImageFilter
+from PIL import Image, ImageChops, ImageFilter
 
 from .engines import ENGINES, pick_engine
 from .styles import Style, get_style
@@ -30,6 +33,8 @@ from .styles import Style, get_style
 _SS_STATIC = 2.0
 _ANIMATED_SS_AREA_LIMIT = 1_100_000  # ~HD; above this animate at 1x
 
+_MAX_PLATES = 16  # registration offsets are pre-drawn for this many plates
+
 
 def _supersample(w: int, h: int, animated: bool) -> float:
     if animated and w * h > _ANIMATED_SS_AREA_LIMIT:
@@ -37,19 +42,79 @@ def _supersample(w: int, h: int, animated: bool) -> float:
     return _SS_STATIC
 
 
-def _blob_noise(rng: np.random.Generator, w: int, h: int, cells: int) -> np.ndarray:
-    """Soft blotch field in [0,1] — low-res noise smoothly upscaled."""
-    gw, gh = max(2, cells), max(2, round(cells * h / max(1, w)))
-    grid = rng.random((gh, gw), dtype=np.float32)
-    img = Image.fromarray((grid * 255).astype(np.uint8), "L")
-    img = img.resize((w, h), Image.BICUBIC)
-    return np.asarray(img, dtype=np.float32) / 255.0
+def _noise_image(rng: random.Random, w: int, h: int) -> Image.Image:
+    """Seeded uniform-noise L image (PIL's effect_noise is unseedable)."""
+    return Image.frombytes("L", (w, h), bytes(rng.getrandbits(8) for _ in range(w * h)))
+
+
+def _blob_noise(rng: random.Random, w: int, h: int, cells: int) -> Image.Image:
+    """Soft blotch field — low-res seeded noise smoothly upscaled, squared
+    so ink dropout stays mostly-nothing with occasional light patches."""
+    gw = max(2, cells)
+    gh = max(2, round(cells * h / max(1, w)))
+    img = _noise_image(rng, gw, gh).resize((w, h), Image.BICUBIC)
+    return img.point(lambda v: (v * v) // 255)
+
+
+class _Materials:
+    """Per-piece print materials, computed once and reused for every
+    animation frame — paper, ink dropout, and plate offsets don't move."""
+
+    def __init__(self, style: Style, seed: int, w: int, h: int, tex: float):
+        rng = random.Random(seed ^ 0x5EED)
+        self.blotch: Image.Image | None = None
+        if style.coverage_noise > 0:
+            fine = _blob_noise(rng, w, h, cells=110)
+            broad = _blob_noise(rng, w, h, cells=12)
+            blotch = Image.blend(fine, broad, 0.3)
+            # Coverage multiplier map: 255 = full ink, lower = dropout.
+            drop = style.coverage_noise * tex
+            self.blotch = blotch.point(lambda v: 255 - round(drop * v))
+
+        self.offsets: list[tuple[int, int]] = []
+        max_off = style.registration_jitter * w
+        for _ in range(_MAX_PLATES):
+            if max_off > 0:
+                self.offsets.append((round(rng.uniform(-max_off, max_off)),
+                                     round(rng.uniform(-max_off, max_off))))
+            else:
+                self.offsets.append((0, 0))
+
+        # Grain: seeded noise centered on 128, softened and contrast-scaled.
+        self.grain: Image.Image | None = None
+        amp = 0.016 * style.grain * tex
+        if amp > 0:
+            g = _noise_image(rng, max(1, w // 2), max(1, h // 2)).resize((w, h), Image.BILINEAR)
+            k = amp * 255 * 2.0
+            self.grain = g.point(lambda v: max(0, min(255, round(128 + (v - 128) / 127 * k))))
+
+        # Cotton fiber: horizontal streaks from a 1-px-wide noise column.
+        self.fiber: Image.Image | None = None
+        famp = 0.010 * style.fiber * tex
+        if famp > 0:
+            col = _noise_image(rng, 1, max(2, h // 3)).resize((1, h), Image.BICUBIC)
+            fk = famp * 255 * 2.0
+            col = col.point(lambda v: max(0, min(255, round(128 + (v - 128) / 127 * fk))))
+            self.fiber = col.resize((w, h), Image.NEAREST)
+
+        # Vignette: radial multiplier map (255 center → darker corners).
+        self.vignette: Image.Image | None = None
+        if style.vignette > 0:
+            rad = Image.radial_gradient("L").resize((w, h), Image.BILINEAR)
+            vig = style.vignette * 0.09
+            self.vignette = rad.point(
+                lambda v: round(255 * (1.0 - vig * (v / 255.0) ** 2)))
+
+
+def _apply_centered_add(canvas: Image.Image, delta: Image.Image) -> Image.Image:
+    """Add (delta - 128) to the canvas — additive texture around neutral."""
+    return ImageChops.add(canvas, delta.convert("RGB"), scale=1.0, offset=-128)
 
 
 def render_frame(style: Style, algorithm: str, seed: int, w: int, h: int,
                  phase: float = 0.0, density: float = 1.0,
                  texture_strength: float = 1.0, supersample: float = _SS_STATIC,
-                 ) -> Image.Image:
+                 materials: "_Materials | None" = None) -> Image.Image:
     """Render one finished frame as an RGB PIL image."""
     rng = random.Random(seed)
     engine_id = pick_engine(algorithm, rng)
@@ -57,58 +122,40 @@ def render_frame(style: Style, algorithm: str, seed: int, w: int, h: int,
     sw, sh = round(w * ss), round(h * ss)
 
     plates = ENGINES[engine_id](rng, style, sw, sh, phase, density)
+    mat = materials or _Materials(style, seed, w, h, texture_strength)
 
-    # Per-seed material randomness must not disturb composition randomness,
-    # and must be identical across animation frames (paper doesn't move).
-    mat_rng = np.random.default_rng(seed ^ 0x5EED)
-    tex = texture_strength
+    canvas = Image.new("RGB", (w, h), style.paper)
 
-    paper = np.array(style.paper, dtype=np.float32) / 255.0
-    canvas = np.ones((h, w, 3), dtype=np.float32) * paper
-
-    for ink_idx, mask_img, coverage in plates:
-        if mask_img.size != (w, h):
-            mask_img = mask_img.resize((w, h), Image.LANCZOS)
+    for plate_idx, (ink_idx, mask, coverage) in enumerate(plates):
+        if mask.size != (w, h):
+            mask = mask.resize((w, h), Image.LANCZOS)
         if style.edge_blur > 0:
-            mask_img = mask_img.filter(ImageFilter.GaussianBlur(style.edge_blur))
-        mask = np.asarray(mask_img, dtype=np.float32) / 255.0
+            mask = mask.filter(ImageFilter.GaussianBlur(style.edge_blur))
 
-        if style.registration_jitter > 0:
-            max_off = style.registration_jitter * w
-            dx = round(mat_rng.uniform(-max_off, max_off))
-            dy = round(mat_rng.uniform(-max_off, max_off))
-            if dx or dy:
-                mask = np.roll(mask, (dy, dx), axis=(0, 1))
+        dx, dy = mat.offsets[plate_idx % _MAX_PLATES]
+        if dx or dy:
+            mask = ImageChops.offset(mask, dx, dy)
+        if mat.blotch is not None:
+            mask = ImageChops.multiply(mask, mat.blotch)
 
-        if style.coverage_noise > 0:
-            # Real riso ink drops out as fine speckle plus faint broad
-            # unevenness — big soft blobs read as airbrush, not print.
-            fine = _blob_noise(mat_rng, w, h, cells=110) ** 2
-            broad = _blob_noise(mat_rng, w, h, cells=12) ** 2
-            blotch = 0.7 * fine + 0.3 * broad
-            mask = mask * (1.0 - style.coverage_noise * tex * blotch)
+        alpha = style.ink_opacity * coverage
+        if alpha < 1.0:
+            mask = mask.point(lambda v: round(v * alpha))
 
-        ink = np.array(style.inks[ink_idx], dtype=np.float32) / 255.0
-        alpha = (mask * style.ink_opacity * coverage)[..., None]
-        # Transmittance overprint: paper shows through ink like real print.
-        canvas *= (1.0 - alpha * (1.0 - ink))
+        # Transmittance overprint: where the plate covers, the canvas is
+        # multiplied by the ink color — paper and prior inks show through.
+        inked = ImageChops.multiply(canvas, Image.new("RGB", (w, h), style.inks[ink_idx]))
+        canvas = Image.composite(inked, canvas, mask)
 
     # ── Paper finish ─────────────────────────────────────────────────────
-    if style.grain > 0:
-        grain = mat_rng.normal(0.0, 0.016 * style.grain * tex, (h, w, 1)).astype(np.float32)
-        canvas += grain
-    if style.fiber > 0:
-        # Cotton-rag fiber: faint horizontal streaks from blurred 1-D noise.
-        rows = mat_rng.normal(0.0, 1.0, (h, 1)).astype(np.float32)
-        kernel = np.ones(9, dtype=np.float32) / 9
-        rows = np.convolve(rows[:, 0], kernel, mode="same")[:, None, None]
-        canvas += rows * 0.010 * style.fiber * tex
-    if style.vignette > 0:
-        yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
-        rr = np.hypot((xx - w / 2) / (w / 2), (yy - h / 2) / (h / 2)) / np.sqrt(2)
-        canvas *= (1.0 - style.vignette * 0.09 * (rr ** 2))[..., None]
+    if mat.grain is not None:
+        canvas = _apply_centered_add(canvas, mat.grain)
+    if mat.fiber is not None:
+        canvas = _apply_centered_add(canvas, mat.fiber)
+    if mat.vignette is not None:
+        canvas = ImageChops.multiply(canvas, mat.vignette.convert("RGB"))
 
-    return Image.fromarray((np.clip(canvas, 0.0, 1.0) * 255).astype(np.uint8), "RGB")
+    return canvas
 
 
 def render_static(style_id: str, algorithm: str, seed: int, w: int, h: int,
@@ -129,14 +176,16 @@ def render_animated(style_id: str, algorithm: str, seed: int, w: int, h: int,
     """Render a seamless looping animation as animated WebP bytes.
 
     Engines treat ``phase`` cyclically, so frame N wraps back to frame 0
-    with no visible seam.
+    with no visible seam. Materials are computed once — paper texture and
+    registration error hold still while the composition moves.
     """
     style = get_style(style_id)
     ss = _supersample(w, h, animated=True)
+    mat = _Materials(style, seed, w, h, texture_strength)
     imgs = [
         render_frame(style, algorithm, seed, w, h, phase=i / frames,
                      density=density, texture_strength=texture_strength,
-                     supersample=ss)
+                     supersample=ss, materials=mat)
         for i in range(frames)
     ]
     buf = io.BytesIO()
