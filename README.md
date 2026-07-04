@@ -27,6 +27,8 @@ Six composition engines, all available in both styles (`auto` picks per piece):
 - `orbits` — Orbit Rhythm: rhythmic concentric arcs around one or two poles
 - `tatami` — Tatami Grid: recursive golden-ratio subdivision, mostly negative space
 - `beams` — Signal Beams: sharp-angle rays fanning from the frame edges
+- `interference` — Standing Waves: wavefronts from point sources weaving real moiré interference fringes; animated, the waves travel outward
+- `flora` — Quiet Meadow: abstract nature scene — layered noise hills, a low sun, swaying botanical sprigs and drifting birds
 
 ## Output modes
 

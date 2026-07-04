@@ -430,15 +430,166 @@ def beams(rng: random.Random, style: Style, w: int, h: int,
     return plates
 
 
+# ── Engine: interference ─────────────────────────────────────────────────────
+
+def interference(rng: random.Random, style: Style, w: int, h: int,
+                 phase: float, density: float) -> list[Plate]:
+    """Light-wave interference — concentric wavefronts from point sources.
+
+    Each source emits fine rings on its own ink plate; where the ring
+    systems overlap, hyperbolic moiré fringes emerge exactly as physical
+    interference bands do. Animation advances every wavefront outward one
+    wavelength per loop, so the waves travel seamlessly.
+    """
+    d = density * style.density_bias
+    diag = math.hypot(w, h)
+    n_src = 2 + (rng.random() < 0.45 * d)
+
+    # Sources spread apart so the fringe field fills the frame.
+    sources: list[tuple[float, float]] = []
+    for i in range(n_src):
+        ang = TWO_PI * (i / n_src) + rng.uniform(-0.5, 0.5)
+        rad = rng.uniform(0.12, 0.3) * min(w, h)
+        sources.append((w / 2 + rad * math.cos(ang) * rng.uniform(0.8, 2.2),
+                        h / 2 + rad * math.sin(ang) * rng.uniform(0.8, 1.6)))
+
+    wavelength = rng.uniform(0.022, 0.04) * min(w, h) / max(0.75, math.sqrt(d))
+    if style.render_mode == "ascii":
+        # Rings finer than the character grid alias into a solid glyph
+        # field — waves must span several cells to read as waves.
+        wavelength *= 2.6
+    ring_w = max(1, round(wavelength * rng.uniform(0.3, 0.42)))
+    rings = int(1.25 * diag / wavelength) + 1
+    ink_coverage = 0.7 if style.blend == "multiply" else 0.8
+
+    plates: list[Plate] = []
+    dot_mask, dot_draw = _mask(w, h)
+    for si, (sx, sy) in enumerate(sources):
+        m, dr = _mask(w, h)
+        travel = wavelength * phase  # one wavelength per loop → seamless
+        for k in range(rings):
+            r = travel + k * wavelength
+            if r < 1:
+                continue
+            dr.ellipse([sx - r, sy - r, sx + r, sy + r], outline=255, width=ring_w)
+        plates.append((si % 3, m, ink_coverage))
+        pr = 0.008 * min(w, h)
+        dot_draw.ellipse([sx - pr, sy - pr, sx + pr, sy + pr], fill=255)
+
+    plates.append((style.accent_index, dot_mask, 1.0))
+    return plates
+
+
+# ── Engine: flora ────────────────────────────────────────────────────────────
+
+def flora(rng: random.Random, style: Style, w: int, h: int,
+          phase: float, density: float) -> list[Plate]:
+    """Abstract nature scene — layered hills, a low sun, swaying sprigs.
+
+    Noise-displaced horizon bands recede toward a quiet sky; botanical
+    sprigs with seed heads grow from the front slopes and sway gently
+    with the animation phase; an occasional bird drifts above.
+    """
+    d = density * style.density_bias
+    noise = _value_noise(rng)
+
+    # Sun (or moon) first, so hills occlude its lower edge at the horizon.
+    sun_mask, sun_draw = _mask(w, h)
+    sr = rng.uniform(0.06, 0.11) * min(w, h)
+    sx = rng.uniform(0.18, 0.82) * w
+    sy = rng.uniform(0.16, 0.38) * h
+    sun_draw.ellipse([sx - sr, sy - sr, sx + sr, sy + sr], fill=255)
+    sun_ink = rng.choice([0, 2])
+
+    # Hill bands, back to front.
+    n_hills = 3 + (rng.random() < 0.5 * d)
+    hill_inks = [1, 2, 0, 1]
+    rng.shuffle(hill_inks)
+    hill_masks: dict[int, Image.Image] = {}
+    hill_draws: dict[int, ImageDraw.ImageDraw] = {}
+    silhouettes: list[list[tuple[float, float]]] = []
+    for hi in range(n_hills):
+        depth = hi / max(1, n_hills - 1)          # 0 = far, 1 = near
+        base_y = (0.45 + 0.4 * depth) * h
+        amp = rng.uniform(0.035, 0.085) * h * (0.6 + 0.7 * depth)
+        freq = rng.uniform(1.2, 2.6)
+        yoff = rng.uniform(0, 100)
+        pts = []
+        steps = 48
+        for sxi in range(steps + 1):
+            x = w * sxi / steps
+            y = base_y + (noise(freq * sxi / steps * 4, yoff) - 0.5) * 2 * amp
+            pts.append((x, y))
+        silhouettes.append(pts)
+        ink = hill_inks[hi % len(hill_inks)]
+        if ink not in hill_masks:
+            hill_masks[ink], hill_draws[ink] = _mask(w, h)
+        hill_draws[ink].polygon(pts + [(w, h * 1.05), (0, h * 1.05)], fill=255)
+
+    # Sprigs grow from the front two silhouettes.
+    line_mask, line_draw = _mask(w, h)
+    head_mask, head_draw = _mask(w, h)
+    hairline = max(1, round(0.002 * min(w, h)))
+    n_sprigs = max(4, round(9 * d) + rng.randint(0, 3))
+    front = silhouettes[-2:] if len(silhouettes) > 1 else silhouettes
+    for si in range(n_sprigs):
+        sil = front[rng.randrange(len(front))]
+        bx, by = sil[rng.randrange(4, len(sil) - 4)]
+        height = rng.uniform(0.07, 0.17) * h
+        sway = 0.018 * w * _osc(phase, si * 0.21) * rng.uniform(0.4, 1.0)
+        lean = rng.uniform(-0.15, 0.15) * height
+        pts = []
+        segs = 8
+        for t in range(segs + 1):
+            f = t / segs
+            px = bx + (lean + sway) * (f ** 2)
+            py = by - height * f
+            pts.append((px, py))
+        line_draw.line(pts, fill=255, width=hairline)
+        top = pts[-1]
+        kind = rng.random()
+        hr = rng.uniform(0.008, 0.02) * min(w, h)
+        if kind < 0.45:      # seed head disc
+            head_draw.ellipse([top[0] - hr, top[1] - hr, top[0] + hr, top[1] + hr], fill=255)
+        elif kind < 0.75:    # open umbel: short rays
+            for a in (-0.9, -0.45, 0.0, 0.45, 0.9):
+                ex = top[0] + 2.2 * hr * math.sin(a)
+                ey = top[1] - 2.2 * hr * math.cos(a)
+                line_draw.line([top, (ex, ey)], fill=255, width=hairline)
+        else:                # bud arc
+            line_draw.arc([top[0] - hr * 1.6, top[1] - hr * 1.6,
+                           top[0] + hr * 1.6, top[1] + hr * 1.6], 200, 340,
+                          fill=255, width=hairline)
+
+    # A bird or two.
+    if rng.random() < 0.65:
+        for bi in range(rng.randint(1, 3)):
+            bx = rng.uniform(0.15, 0.85) * w + 0.01 * w * _osc(phase, bi * 0.37)
+            by = rng.uniform(0.08, 0.3) * h
+            bw = rng.uniform(0.012, 0.022) * w
+            line_draw.arc([bx - bw, by - bw * 0.6, bx, by + bw * 0.6], 200, 330,
+                          fill=255, width=hairline)
+            line_draw.arc([bx, by - bw * 0.6, bx + bw, by + bw * 0.6], 210, 340,
+                          fill=255, width=hairline)
+
+    plates: list[Plate] = [(sun_ink, sun_mask, 0.9)]
+    plates.extend((ink, m, 1.0) for ink, m in hill_masks.items())
+    plates.append((style.accent_index, head_mask, 1.0))
+    plates.append((style.line_index, line_mask, 0.9))
+    return plates
+
+
 # ── Registry ─────────────────────────────────────────────────────────────────
 
 ENGINES: dict[str, Callable[..., list[Plate]]] = {
-    "arches":    arches,
-    "flowfield": flowfield,
-    "inkweave":  inkweave,
-    "orbits":    orbits,
-    "tatami":    tatami,
-    "beams":     beams,
+    "arches":       arches,
+    "flowfield":    flowfield,
+    "inkweave":     inkweave,
+    "orbits":       orbits,
+    "tatami":       tatami,
+    "beams":        beams,
+    "interference": interference,
+    "flora":        flora,
 }
 
 ENGINE_INFO: list[dict[str, str]] = [
@@ -454,6 +605,10 @@ ENGINE_INFO: list[dict[str, str]] = [
      "description": "Recursive golden-ratio subdivision, mostly negative space"},
     {"id": "beams",     "name": "Signal Beams",
      "description": "Sharp-angle rays fanning from the frame edges"},
+    {"id": "interference", "name": "Standing Waves",
+     "description": "Wavefronts from point sources weaving interference fringes"},
+    {"id": "flora",     "name": "Quiet Meadow",
+     "description": "Layered hills, a low sun, and swaying botanical sprigs"},
 ]
 
 
