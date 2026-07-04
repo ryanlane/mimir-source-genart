@@ -2,7 +2,7 @@
   "id": "com.mimir.genart",
   "name": "Generative Art",
   "description": "Gallery-grade algorithmic art rendered locally — no external APIs. Two print styles (Bauhaus × Wabi-Sabi giclée, 1960s constructivist risograph) across six composition algorithms, with static PNG output for e-ink and seamless animated WebP loops for LCD/OLED displays.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "embedded",
   "entry_point": "channel.py",
   "class_name": "GenArtChannel",
