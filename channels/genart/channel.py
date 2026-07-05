@@ -1,26 +1,32 @@
 """Generative Art channel for Mimir.
 
 Renders algorithmic, gallery-grade generative art locally with Pillow —
-no external APIs. Two print styles (Bauhaus × Wabi-Sabi giclée and 1960s
-constructivist risograph) share six composition engines. Output is either
-a static PNG (e-ink safe) or a seamless animated WebP loop (LCD/OLED).
+no external APIs. Eight print styles share thirteen composition engines.
+Output is either a static PNG (e-ink safe) or a seamless animated WebP
+loop (LCD/OLED).
+
+A **Gallery** is one named, saved configuration (style, algorithm, output
+mode, seed policy, density, texture) — a sub-channel. Different galleries
+can be assigned to different programs and displays; request_image picks
+the gallery named by the caller (subchannel_id / gallery_id /
+settings.subChannelId), falling back to the first configured gallery.
 """
 from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import logging
+import random
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
 from .engines import ENGINE_INFO, pick_engine
-from .models import Settings
+from .models import Gallery, GalleryStore
 from .styles import STYLES, resolve_style
 from . import renderer as _renderer
 
@@ -31,17 +37,13 @@ _PREVIEW_MAX = 640
 
 
 class GenArtChannel:
-    def __init__(self, channel_dir: str, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, channel_dir: str):
         self.channel_dir = Path(channel_dir)
         self.data_dir = self.channel_dir / "data"
         self.data_dir.mkdir(exist_ok=True)
-        self._settings_path = self.data_dir / "settings.json"
         self._meta = self._load_plugin_json()
         self.id = self._meta.get("id", _PLUGIN_ID)
-        self.settings = self._load_settings()
-        if config:
-            self.settings = Settings.from_dict({**self.settings.to_dict(), **config})
-            self._save_settings()
+        self.store = GalleryStore(self.data_dir / "galleries.json")
 
         self.supports_push = False
 
@@ -52,73 +54,59 @@ class GenArtChannel:
         self._render_lock = asyncio.Lock()
         self._last_render: Optional[Dict[str, Any]] = None
 
+        logger.info("[genart] Initialized at %s, %d galleries", self.channel_dir, len(self.store.all()))
+
     # ── Persistence ───────────────────────────────────────────────────────
 
     def _load_plugin_json(self) -> Dict[str, Any]:
         try:
             with open(self.channel_dir / "plugin.json") as f:
+                import json
                 return json.load(f)
         except Exception:
             return {}
 
-    def _load_settings(self) -> Settings:
-        try:
-            return Settings.from_dict(json.loads(self._settings_path.read_text()))
-        except FileNotFoundError:
-            return Settings()
-        except Exception as exc:
-            logger.warning("[genart] could not load settings: %s", exc)
-            return Settings()
-
-    def _save_settings(self) -> None:
-        try:
-            self._settings_path.write_text(json.dumps(self.settings.to_dict(), indent=2))
-        except Exception as exc:
-            logger.warning("[genart] could not save settings: %s", exc)
-
     # ── Seeds ─────────────────────────────────────────────────────────────
 
-    def _current_seed(self) -> int:
-        mode = self.settings.seed_mode
+    def _current_seed(self, gallery: Gallery) -> int:
+        mode = gallery.seed_mode
         if mode == "fixed":
-            return self.settings.seed
+            return gallery.seed
         now = datetime.now(timezone.utc)
         if mode == "daily":
-            basis = now.strftime("%Y-%m-%d")
+            basis = now.strftime("%Y-%m-%d") + gallery.id
         elif mode == "hourly":
-            basis = now.strftime("%Y-%m-%d-%H")
+            basis = now.strftime("%Y-%m-%d-%H") + gallery.id
         else:  # refresh — new piece on every render request
             return int.from_bytes(hashlib.sha256(str(time.time_ns()).encode()).digest()[:4], "big")
         return int.from_bytes(hashlib.sha256(basis.encode()).digest()[:4], "big")
 
     # ── Rendering ─────────────────────────────────────────────────────────
 
-    def _render_sync(self, seed: int, w: int, h: int) -> Dict[str, Any]:
-        s = self.settings
+    def _render_sync(self, gallery: Gallery, seed: int, w: int, h: int) -> Dict[str, Any]:
         started = time.time()
-        if s.output_mode == "animated":
+        if gallery.output_mode == "animated":
             data = _renderer.render_animated(
-                s.style, s.algorithm, seed, w, h,
-                frames=s.frames, frame_ms=s.frame_ms,
-                density=s.density_factor, texture_strength=s.texture_factor,
+                gallery.style, gallery.algorithm, seed, w, h,
+                frames=gallery.frames, frame_ms=gallery.frame_ms,
+                density=gallery.density_factor, texture_strength=gallery.texture_factor,
             )
             content_type, fmt = "image/webp", "webp"
         else:
             data = _renderer.render_static(
-                s.style, s.algorithm, seed, w, h,
-                density=s.density_factor, texture_strength=s.texture_factor,
+                gallery.style, gallery.algorithm, seed, w, h,
+                density=gallery.density_factor, texture_strength=gallery.texture_factor,
             )
             content_type, fmt = "image/png", "png"
 
-        import random as _random
-        engine_id = pick_engine(s.algorithm, _random.Random(seed))
-        style = resolve_style(s.style, seed)
+        engine_id = pick_engine(gallery.algorithm, random.Random(seed))
+        style = resolve_style(gallery.style, seed)
         entry = {
             "bytes":        data,
             "content_type": content_type,
             "format":       fmt,
             "sha256":       hashlib.sha256(data).hexdigest(),
-            "description":  f"{style.name} — {engine_id} #{seed}",
+            "description":  f"{gallery.name} — {style.name} — {engine_id} #{seed}",
             "seed":         seed,
             "engine":       engine_id,
             "style":        style.id,
@@ -126,21 +114,37 @@ class GenArtChannel:
         }
         return entry
 
-    def _cache_key(self, seed: int, w: int, h: int) -> str:
-        s = self.settings
+    def _cache_key(self, gallery: Gallery, seed: int, w: int, h: int) -> str:
         return "|".join(str(v) for v in (
-            seed, w, h, s.style, s.algorithm, s.output_mode,
-            s.density, s.texture_strength, s.frames, s.frame_ms,
+            gallery.id, seed, w, h, gallery.style, gallery.algorithm, gallery.output_mode,
+            gallery.density, gallery.texture_strength, gallery.frames, gallery.frame_ms,
         ))
 
+    def _resolve_gallery(self, data: Dict[str, Any]) -> Optional[Gallery]:
+        gallery_id = (
+            data.get("subchannel_id")
+            or data.get("gallery_id")
+            or (data.get("settings") or {}).get("subChannelId")
+        )
+        if gallery_id:
+            gallery = self.store.get(gallery_id)
+            if gallery:
+                return gallery
+        galleries = self.store.all()
+        return galleries[0] if galleries else None
+
     async def request_image(self, request_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        rd = request_data or {}
-        settings_block = rd.get("settings", {})
+        data = request_data or {}
+        gallery = self._resolve_gallery(data)
+        if not gallery:
+            return {"success": False, "error": "No gallery configured — add one in the channel manager"}
+
+        settings_block = data.get("settings", {})
         res = settings_block.get("resolution", [800, 480])
         width, height = int(res[0]), int(res[1])
 
-        seed = self._current_seed()
-        cache_key = self._cache_key(seed, width, height)
+        seed = self._current_seed(gallery)
+        cache_key = self._cache_key(gallery, seed, width, height)
         cached = self._image_cache.get(cache_key)
         if cached:
             return self._build_response(cached, width, height, hit=True)
@@ -153,7 +157,7 @@ class GenArtChannel:
                 return self._build_response(cached, width, height, hit=True)
             loop = asyncio.get_event_loop()
             try:
-                entry = await loop.run_in_executor(None, self._render_sync, seed, width, height)
+                entry = await loop.run_in_executor(None, self._render_sync, gallery, seed, width, height)
             except Exception as exc:
                 logger.exception("[genart] render failed: %s", exc)
                 return {"success": False, "error": f"render failed: {exc}"}
@@ -162,13 +166,14 @@ class GenArtChannel:
                 self._image_cache.clear()
             self._image_cache[cache_key] = entry
             self._last_render = {
-                "seed": entry["seed"], "engine": entry["engine"],
-                "style": self.settings.style, "output_mode": self.settings.output_mode,
+                "gallery_id": gallery.id, "gallery_name": gallery.name,
+                "seed": entry["seed"], "engine": entry["engine"], "style": entry["style"],
+                "output_mode": gallery.output_mode,
                 "resolution": [width, height], "render_ms": entry["render_ms"],
                 "at": time.time(),
             }
-            logger.info("[genart] rendered %s seed=%s %dx%d in %dms",
-                        entry["engine"], entry["seed"], width, height, entry["render_ms"])
+            logger.info("[genart] rendered gallery=%s %s seed=%s %dx%d in %dms",
+                        gallery.name, entry["engine"], entry["seed"], width, height, entry["render_ms"])
         return self._build_response(entry, width, height, hit=False)
 
     def _build_response(self, entry: Dict[str, Any], width: int, height: int, hit: bool) -> Dict[str, Any]:
@@ -184,16 +189,17 @@ class GenArtChannel:
             "description":         entry["description"],
             "cache_hit":           hit,
             "metadata": {
-                "style":     entry.get("style", self.settings.style),
+                "style":     entry["style"],
                 "engine":    entry["engine"],
                 "seed":      entry["seed"],
                 "animated":  entry["format"] == "webp",
             },
         }
 
-    # ── Manifest ──────────────────────────────────────────────────────────
+    # ── Manifest / subchannels ──────────────────────────────────────────────
 
     def get_manifest(self) -> Dict[str, Any]:
+        galleries = self.store.all()
         return {
             "id":          self.id,
             "name":        self._meta.get("name", "Generative Art"),
@@ -202,7 +208,7 @@ class GenArtChannel:
             "icon":        self._meta.get("icon", "shapes"),
             "capabilities": {
                 "supports_upload":      False,
-                "supports_subchannels": False,
+                "supports_subchannels": True,
                 "supports_push":        False,
                 "supports_now_playing": False,
             },
@@ -210,9 +216,32 @@ class GenArtChannel:
                 "components": {"manager": f"/api/channels/{self.id}/ui/manage.esm.js"},
                 "elements":   {"manager": "x-genart-manager"},
             },
-            "healthy":    True,
-            "configured": True,  # no external service — always ready
+            "healthy":        True,
+            "configured":     bool(galleries),
+            "setup_required": not bool(galleries),
+            "display_count":  len(galleries),
         }
+
+    def supports_subchannels(self) -> bool:
+        return True
+
+    def get_subchannels(self) -> List[Dict[str, Any]]:
+        return [
+            {
+                "id":            g.id,
+                "name":          g.name,
+                "image_count":   1,
+                "type":          "subchannel",
+                "style":         g.style,
+                "algorithm":     g.algorithm,
+                "output_mode":   g.output_mode,
+            }
+            for g in self.store.all()
+        ]
+
+    def get_subchannel(self, subchannel_id: str) -> Optional[Dict[str, Any]]:
+        g = self.store.get(subchannel_id)
+        return g.to_dict() if g else None
 
     # ── FastAPI router ────────────────────────────────────────────────────
 
@@ -220,10 +249,22 @@ class GenArtChannel:
         router = APIRouter()
         _ui_dir = self.channel_dir / "ui"
 
+        def _render_preview_bytes(gallery: Gallery, w: int, h: int) -> bytes:
+            seed = self._current_seed(gallery) if gallery.seed_mode == "fixed" else (gallery.seed or 1)
+            if gallery.output_mode == "animated":
+                return _renderer.render_animated(
+                    gallery.style, gallery.algorithm, seed, w, h,
+                    frames=gallery.frames, frame_ms=gallery.frame_ms,
+                    density=gallery.density_factor, texture_strength=gallery.texture_factor,
+                )
+            return _renderer.render_static(
+                gallery.style, gallery.algorithm, seed, w, h,
+                density=gallery.density_factor, texture_strength=gallery.texture_factor,
+            )
+
         @router.get("/ui/{filename:path}")
         async def serve_ui(filename: str):
             from fastapi.responses import FileResponse
-            from fastapi import HTTPException
             file_path = (_ui_dir / filename).resolve()
             try:
                 file_path.relative_to(_ui_dir.resolve())
@@ -242,53 +283,90 @@ class GenArtChannel:
             return JSONResponse({
                 "status":      "ok",
                 "last_render": self._last_render,
+                "galleries":   self.get_subchannels(),
                 "styles":      [{"id": s.id, "name": s.name, "description": s.description}
                                 for s in STYLES.values()],
                 "algorithms":  ENGINE_INFO,
             })
 
-        @router.get("/settings")
-        async def get_settings():
-            return JSONResponse({"success": True, "settings": self.settings.to_public_dict()})
+        @router.get("/subchannels")
+        async def list_subchannels():
+            return JSONResponse(self.get_subchannels())
 
-        @router.put("/settings")
-        async def put_settings(request: Request):
-            try:
-                body = await request.json()
-            except Exception:
-                return JSONResponse({"success": False, "error": "invalid JSON"}, status_code=400)
-            if not isinstance(body, dict):
-                return JSONResponse({"success": False, "error": "expected object"}, status_code=400)
-            self.settings = Settings.from_dict({**self.settings.to_dict(), **body})
-            self._save_settings()
+        @router.post("/subchannels")
+        async def create_gallery(request: Request):
+            body = await request.json()
+            gallery = self.store.create(body)
+            return JSONResponse(gallery.to_dict(), status_code=201)
+
+        @router.get("/subchannels/{gallery_id}")
+        async def get_gallery(gallery_id: str):
+            g = self.store.get(gallery_id)
+            if not g:
+                raise HTTPException(404, "Gallery not found")
+            return JSONResponse(g.to_dict())
+
+        @router.put("/subchannels/{gallery_id}")
+        async def update_gallery(gallery_id: str, request: Request):
+            body = await request.json()
+            g = self.store.update(gallery_id, body)
+            if not g:
+                raise HTTPException(404, "Gallery not found")
             self._image_cache.clear()
-            return JSONResponse({"success": True, "settings": self.settings.to_public_dict()})
+            return JSONResponse(g.to_dict())
 
-        @router.get("/preview")
-        async def preview(width: int = 400, height: int = 240,
-                          style: str = "", algorithm: str = "", seed: int = 0):
-            """Small static render for the manage UI — always PNG."""
-            w = max(64, min(_PREVIEW_MAX, width))
-            h = max(64, min(_PREVIEW_MAX, height))
-            s = self.settings
-            style_id = style if (style in STYLES or style == "random") else s.style
-            algo = algorithm or s.algorithm
+        @router.delete("/subchannels/{gallery_id}")
+        async def delete_gallery(gallery_id: str):
+            if not self.store.delete(gallery_id):
+                raise HTTPException(404, "Gallery not found")
+            self._image_cache.clear()
+            return JSONResponse({"success": True})
+
+        @router.get("/subchannels/{gallery_id}/preview")
+        async def preview_gallery(gallery_id: str, w: int = 400, h: int = 240):
+            g = self.store.get(gallery_id)
+            if not g:
+                raise HTTPException(404, "Gallery not found")
+            pw = max(64, min(_PREVIEW_MAX, w))
+            ph = max(64, min(_PREVIEW_MAX, h))
             loop = asyncio.get_event_loop()
             try:
+                data = await loop.run_in_executor(None, _render_preview_bytes, g, pw, ph)
+            except Exception as exc:
+                logger.exception("[genart] preview render failed: %s", exc)
+                raise HTTPException(500, str(exc))
+            media = "image/webp" if g.output_mode == "animated" else "image/png"
+            return Response(content=data, media_type=media, headers={"Cache-Control": "no-store"})
+
+        @router.post("/preview")
+        async def preview_draft(request: Request):
+            """Render a preview from an unsaved config (used during add/edit)."""
+            body = await request.json()
+            config_data = body.get("config", body)
+            pw = max(64, min(_PREVIEW_MAX, int(body.get("w", 400))))
+            ph = max(64, min(_PREVIEW_MAX, int(body.get("h", 240))))
+            try:
+                gallery = Gallery.from_dict({**config_data, "id": "draft"})
+            except Exception as exc:
+                raise HTTPException(422, f"Invalid config: {exc}")
+            loop = asyncio.get_event_loop()
+            try:
+                # Drafts always preview as a static PNG — fast feedback while
+                # editing; animated output is confirmed after saving.
                 data = await loop.run_in_executor(
                     None,
                     lambda: _renderer.render_static(
-                        style_id, algo, seed or 1, w, h,
-                        density=s.density_factor, texture_strength=s.texture_factor,
+                        gallery.style, gallery.algorithm, gallery.seed or 1, pw, ph,
+                        density=gallery.density_factor, texture_strength=gallery.texture_factor,
                     ),
                 )
             except Exception as exc:
-                logger.exception("[genart] preview render failed: %s", exc)
-                return JSONResponse({"success": False, "error": str(exc)}, status_code=500)
-            return Response(content=data, media_type="image/png")
+                logger.exception("[genart] draft preview failed: %s", exc)
+                raise HTTPException(500, str(exc))
+            return Response(content=data, media_type="image/png", headers={"Cache-Control": "no-store"})
 
         @router.post("/request-image")
-        async def request_image(request: Request):
+        async def request_image_route(request: Request):
             try:
                 body = await request.json()
             except Exception:

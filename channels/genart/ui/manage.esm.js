@@ -1,261 +1,447 @@
-const BASE_URL = () => window.mimirServerBaseUrl || window.location.origin;
-const API = () => `${BASE_URL()}/api/channels/com.mimir.genart`;
-
-const STYLE_META = {
-  random:         { label: '🎲 Random',               hint: 'A different style with every piece' },
-  wabi:           { label: 'Kyoto Bauhaus',           hint: 'Wabi-Sabi giclée · terracotta / oat / charcoal / sage' },
-  constructivist: { label: "Riso Constructivist '66", hint: 'Risograph inks · mustard / teal / burnt orange / cream' },
-  phosphor:       { label: 'Phosphor Terminal',       hint: 'ASCII characters · Mimir green on CRT black, scanlines + glow' },
-  blueprint:      { label: 'Blueprint Cyanotype',     hint: 'Pale line work · Prussian blue drafting paper' },
-  neon:           { label: 'Neon Dusk',               hint: 'Synthwave glow · pink / cyan / violet on indigo (OLED)' },
-  popart:         { label: 'Ben-Day Pop',             hint: 'Comic-press dots · cadmium red / yellow / blue + black line' },
-  watercolor:     { label: 'Morning Watercolor',      hint: 'Bleeding washes · rose / cerulean / ochre on cold-press' },
-  deco:           { label: 'Gilded Deco',             hint: 'Gold leaf + champagne on warm black lacquer' },
-};
-
-const ALGO_LABELS = {
-  auto: 'Auto (per piece)', arches: 'Arch Study', flowfield: 'Sand Currents',
-  inkweave: 'Ink Weave', orbits: 'Orbit Rhythm', tatami: 'Tatami Grid', beams: 'Signal Beams',
-  interference: 'Standing Waves', flora: 'Quiet Meadow',
-  truchet: 'Truchet Maze', contours: 'Contour Map',
-  harmonograph: 'Harmonograph', glyphrain: 'Glyph Rain',
-};
-
-const STYLES = `
-  :host { display: block; font-family: var(--font-base, system-ui, sans-serif); color: var(--color-text, #e8e8e8); }
-  .panel { max-width: 720px; }
-  h2 { font-size: 1.1rem; margin: 0 0 4px; color: var(--color-text, #e8e8e8); }
-  .sub { font-size: 0.82rem; color: var(--color-text-secondary, #888); margin: 0 0 20px; }
-  .form-group { margin-bottom: 14px; }
-  label { display: block; font-size: 0.82rem; margin-bottom: 4px; color: var(--color-text-secondary, #888); }
-  select, input[type=number] {
-    width: 100%; box-sizing: border-box;
-    background: var(--color-surface, #1a1a1a); border: 1px solid var(--color-border, #333);
-    color: var(--color-text, #e8e8e8); border-radius: var(--radius-sm, 4px);
-    padding: 8px 10px; font-size: 0.9rem;
-  }
-  input[type=range] { width: 100%; }
-  .hint { font-size: 0.75rem; color: var(--color-text-tertiary, #666); margin-top: 4px; }
-  .actions { display: flex; gap: 10px; align-items: center; margin-top: 18px; flex-wrap: wrap; }
-  .btn { padding: 8px 18px; border: none; border-radius: var(--radius-sm, 4px); cursor: pointer; font-size: 0.9rem; }
-  .btn-primary { background: light-dark(#036600, #2e7a30); color: #fff; }
-  .btn-primary:hover { background: light-dark(#024d00, #3a963c); }
-  .btn-primary:disabled { opacity: 0.5; cursor: default; }
-  .btn-secondary { background: var(--color-surface, #222); color: var(--color-text, #e8e8e8); border: 1px solid var(--color-border, #333); }
-  .btn-secondary:hover { background: var(--color-surface-hover, #2a2a2a); }
-  .error { color: var(--color-error, #f87171); font-size: 0.82rem; margin-top: 8px; }
-  .success-msg { color: var(--color-success, #4ade80); font-size: 0.82rem; margin-top: 8px; }
-  .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--color-accent, #00c851);
-    border-top-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; vertical-align: middle; }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  .divider { border: none; border-top: 1px solid var(--color-border, #333); margin: 20px 0; }
-  .section-title { font-size: 0.78rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
-    color: var(--color-text-tertiary, #666); margin-bottom: 12px; }
-  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-  .style-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-  .style-card { text-align: left; padding: 12px 14px; border: 1px solid var(--color-border, #333);
-    border-radius: var(--radius-md, 8px); background: var(--color-surface, #1a1a1a);
-    color: var(--color-text, #e8e8e8); cursor: pointer; }
-  .style-card.active { border-color: var(--color-accent, #00c851); box-shadow: inset 3px 0 0 var(--color-accent, #00c851); }
-  .style-name { display: block; font-weight: 600; margin-bottom: 3px; }
-  .style-hint { display: block; font-size: 0.74rem; color: var(--color-text-tertiary, #666); }
-  .preview-box { background: var(--color-background-alt, #111); border: 1px solid var(--color-border, #333);
-    border-radius: var(--radius-md, 8px); padding: 14px; margin-bottom: 20px; }
-  .preview-row { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
-  .preview-img { width: 360px; max-width: 100%; aspect-ratio: 5 / 3; border-radius: 4px;
-    background: #222; object-fit: cover; }
-  .preview-side { display: flex; flex-direction: column; gap: 8px; min-width: 140px; }
-  .preview-meta { font-size: 0.75rem; color: var(--color-text-tertiary, #666); line-height: 1.5; }
-  @media (max-width: 640px) { .two-col, .style-cards { grid-template-columns: 1fr; } }
-`;
-
+/**
+ * Mimir Generative Art Channel Manager
+ * Custom element: <x-genart-manager channel-id="com.mimir.genart">
+ *
+ * A Gallery is one named, saved generative-art configuration — assign
+ * different galleries to different programs and displays. This manager
+ * lists galleries, edits one at a time with a live preview, and shows a
+ * first-run explainer when none exist yet.
+ */
 class GenArtManager extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
     this._state = {
-      loading: true, saving: false, error: null, successMsg: null,
-      style: 'wabi', algorithm: 'auto', outputMode: 'static',
-      seedMode: 'refresh', seed: 1, density: 'balanced',
-      textureStrength: 100, frames: 24, frameMs: 120,
-      previewSeed: Math.floor(Math.random() * 100000),
+      loading:        true,
+      galleries:      [],
+      styles:         [],   // [{id, name, description}]
+      algorithms:     [],   // [{id, name, description}]
+      editingId:      null, // null=list, ''=new, 'uuid'=editing
+      form:           this._blankForm(),
+      saving:         false,
+      previewUrl:     null,
       previewLoading: false,
+      message:        null,
+    };
+    this._previewTimer = null;
+  }
+
+  get channelId() { return this.getAttribute('channel-id') || 'com.mimir.genart'; }
+  get apiBase()   { return `/api/channels/${this.channelId}`; }
+
+  connectedCallback() {
+    this.shadowRoot.addEventListener('click',  e => this._handleClick(e));
+    this.shadowRoot.addEventListener('change', e => this._handleChange(e));
+    this.shadowRoot.addEventListener('input',  e => this._handleChange(e));
+    this._load();
+  }
+
+  _blankForm() {
+    return {
+      name: 'My Gallery', style: 'wabi', algorithm: 'auto', output_mode: 'static',
+      seed_mode: 'refresh', seed: 1, density: 'balanced', texture_strength: 100,
+      frames: 24, frame_ms: 120,
     };
   }
 
-  connectedCallback() { this._load(); }
-
-  _set(patch) { Object.assign(this._state, patch); this._render(); }
-
   async _load() {
+    this._setState({ loading: true });
     try {
-      const resp = await fetch(`${API()}/settings`);
-      const data = await resp.json();
-      const s = data.settings || {};
-      this._set({
-        loading: false,
-        style: s.style || 'wabi',
-        algorithm: s.algorithm || 'auto',
-        outputMode: s.output_mode || 'static',
-        seedMode: s.seed_mode || 'refresh',
-        seed: s.seed ?? 1,
-        density: s.density || 'balanced',
-        textureStrength: s.texture_strength ?? 100,
-        frames: s.frames ?? 24,
-        frameMs: s.frame_ms ?? 120,
+      const status = await fetch(`${this.apiBase}/status`).then(r => r.json());
+      this._setState({
+        loading:    false,
+        galleries:  status.galleries || [],
+        styles:     status.styles || [],
+        algorithms: status.algorithms || [],
       });
     } catch (e) {
-      this._set({ loading: false, error: String(e) });
+      this._setState({ loading: false, message: { type: 'error', text: `Load failed: ${e.message}` } });
     }
   }
 
-  async _save() {
-    const s = this._state;
-    this._set({ saving: true, error: null, successMsg: null });
+  _setState(patch) {
+    this._state = { ...this._state, ...patch };
+    this._render();
+  }
+
+  // ── Preview ──────────────────────────────────────────────────────────
+  _schedulePreview() {
+    clearTimeout(this._previewTimer);
+    this._previewTimer = setTimeout(() => this._loadPreview(), 500);
+  }
+
+  async _loadPreview() {
+    this._setState({ previewLoading: true });
     try {
-      const resp = await fetch(`${API()}/settings`, {
-        method: 'PUT',
+      const r = await fetch(`${this.apiBase}/preview`, {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          style: s.style, algorithm: s.algorithm, output_mode: s.outputMode,
-          seed_mode: s.seedMode, seed: Number(s.seed) || 1, density: s.density,
-          texture_strength: Number(s.textureStrength), frames: Number(s.frames),
-          frame_ms: Number(s.frameMs),
-        }),
+        body: JSON.stringify({ config: this._state.form, w: 360, h: 216 }),
       });
-      const data = await resp.json();
-      if (data.success) this._set({ saving: false, successMsg: 'Settings saved.' });
-      else this._set({ saving: false, error: data.error || 'Save failed.' });
+      if (!r.ok) throw new Error(await r.text());
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      this._setState({ previewLoading: false, previewUrl: url });
     } catch (e) {
-      this._set({ saving: false, error: String(e) });
+      this._setState({ previewLoading: false });
     }
   }
 
-  _previewUrl() {
-    const s = this._state;
-    const algo = s.algorithm === 'auto' ? '' : s.algorithm;
-    return `${API()}/preview?width=360&height=216&style=${s.style}&algorithm=${algo}&seed=${s.previewSeed}`;
+  // ── API calls ────────────────────────────────────────────────────────
+  async _saveGallery() {
+    const { editingId, form } = this._state;
+    const isNew = editingId === '';
+    const url = isNew ? `${this.apiBase}/subchannels` : `${this.apiBase}/subchannels/${editingId}`;
+    this._setState({ saving: true });
+    try {
+      const r = await fetch(url, {
+        method: isNew ? 'POST' : 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(form),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      this._setState({
+        saving: false, editingId: null,
+        message: { type: 'success', text: isNew ? 'Gallery created.' : 'Gallery saved.' },
+      });
+      this._load();
+    } catch (e) {
+      this._setState({ saving: false, message: { type: 'error', text: e.message } });
+    }
   }
 
+  async _deleteGallery(id) {
+    if (!confirm('Delete this gallery? Displays using it will show a configuration error until reassigned.')) return;
+    try {
+      await fetch(`${this.apiBase}/subchannels/${id}`, { method: 'DELETE' });
+      this._load();
+    } catch (e) {
+      this._setState({ message: { type: 'error', text: e.message } });
+    }
+  }
+
+  _openEdit(id) {
+    if (id === '') {
+      this._setState({ editingId: '', form: this._blankForm(), previewUrl: null, message: null });
+      this._schedulePreview();
+      return;
+    }
+    const g = this._state.galleries.find(x => x.id === id);
+    fetch(`${this.apiBase}/subchannels/${id}`).then(r => r.json()).then(data => {
+      this._setState({ editingId: id, form: { ...this._blankForm(), ...data }, previewUrl: null, message: null });
+      this._schedulePreview();
+    }).catch(e => this._setState({ message: { type: 'error', text: e.message } }));
+    void g; // list already has summary fields; full detail comes from the fetch above
+  }
+
+  // ── Event dispatch ──────────────────────────────────────────────────
+  _handleClick(e) {
+    const action = e.target.closest('[data-action]')?.dataset.action;
+    const id     = e.target.closest('[data-id]')?.dataset.id;
+    if (!action) return;
+    switch (action) {
+      case 'add-gallery':    this._openEdit('');        break;
+      case 'edit-gallery':   this._openEdit(id);        break;
+      case 'delete-gallery': this._deleteGallery(id);   break;
+      case 'cancel-edit':    this._setState({ editingId: null, previewUrl: null }); break;
+      case 'save-gallery':   this._saveGallery();       break;
+    }
+  }
+
+  _handleChange(e) {
+    const field = e.target.dataset.field;
+    if (!field) return;
+    let value = e.target.value;
+    if (['seed', 'texture_strength', 'frames', 'frame_ms'].includes(field)) {
+      value = Number(value);
+    }
+    this._setState({ form: { ...this._state.form, [field]: value } });
+    this._schedulePreview();
+  }
+
+  _esc(s) {
+    return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  // ── Render ──────────────────────────────────────────────────────────
   _render() {
+    const root = this.shadowRoot;
+    const active = root.activeElement;
+    const focusField = active?.dataset?.field;
+    const focusSel = active?.selectionStart;
+    const focusEnd = active?.selectionEnd;
+
+    root.innerHTML = `<style>${this._css()}</style>${this._html()}`;
+
+    if (focusField) {
+      const el = root.querySelector(`[data-field="${focusField}"]`);
+      if (el) {
+        el.focus();
+        if (focusSel !== null && focusSel !== undefined && el.setSelectionRange) {
+          try { el.setSelectionRange(focusSel, focusEnd); } catch (_) {}
+        }
+      }
+    }
+  }
+
+  _html() {
     const s = this._state;
-    this.shadowRoot.innerHTML = `
-      <style>${STYLES}</style>
+    if (s.loading) return `<div class="loading">Loading…</div>`;
+    if (s.editingId !== null) return this._editPanel();
+    return this._listPanel();
+  }
+
+  _listPanel() {
+    const s = this._state;
+    if (s.galleries.length === 0) return this._oobePanel();
+    return `
       <div class="panel">
-        <h2>Generative Art</h2>
-        <p class="sub">Algorithmic art rendered on this server — no external services.
-          Static PNG for e-ink displays, seamless animated loops for LCD/OLED.</p>
+        ${this._messageBar()}
+        <div class="section-header">
+          <span>Galleries</span>
+          <button class="btn btn-primary" data-action="add-gallery">+ Add Gallery</button>
+        </div>
+        ${s.galleries.map(g => this._galleryCard(g)).join('')}
+      </div>`;
+  }
 
-        ${s.loading ? '<div><span class="spinner"></span> Loading…</div>' : `
-          <div class="preview-box">
-            <div class="section-title">Preview</div>
-            <div class="preview-row">
-              <img class="preview-img" id="previewImg" src="${this._previewUrl()}" alt="Preview render">
-              <div class="preview-side">
-                <button class="btn btn-secondary" id="shuffle">New composition</button>
-                <div class="preview-meta">Seed ${s.previewSeed}<br>
-                  Previews are static; animation appears on the display.</div>
+  _oobePanel() {
+    return `
+      <div class="panel">
+        ${this._messageBar()}
+        <div class="oobe">
+          <div class="oobe-icon">◆</div>
+          <h2>Welcome to Generative Art</h2>
+          <p>
+            Every piece is algorithmic art rendered right here on this server —
+            no external services, no API keys. A <strong>gallery</strong> is a
+            named, saved configuration: a print style, a composition algorithm,
+            and how often a new piece appears.
+          </p>
+          <p>
+            Create as many galleries as you like and assign different ones to
+            different programs and displays — a calm watercolor meadow in the
+            hallway, glowing ASCII waves on the office OLED, whatever fits.
+          </p>
+          <button class="btn btn-primary btn-lg" data-action="add-gallery">Create Your First Gallery</button>
+        </div>
+      </div>`;
+  }
+
+  _galleryCard(g) {
+    const styleName = this._state.styles.find(s => s.id === g.style)?.name
+      || (g.style === 'random' ? '🎲 Random' : g.style);
+    const algoName = this._state.algorithms.find(a => a.id === g.algorithm)?.name
+      || (g.algorithm === 'auto' ? 'Auto' : g.algorithm);
+    const modeLabel = g.output_mode === 'animated' ? '◐ Animated' : '▢ Static';
+    return `
+      <div class="gallery-card">
+        <div class="gallery-info">
+          <div class="gallery-name">${this._esc(g.name)}</div>
+          <div class="gallery-meta">${this._esc(styleName)} · ${this._esc(algoName)} · ${modeLabel}</div>
+        </div>
+        <div class="gallery-actions">
+          <button class="btn btn-ghost btn-sm" data-action="edit-gallery" data-id="${g.id}">Edit</button>
+          <button class="btn btn-danger btn-sm" data-action="delete-gallery" data-id="${g.id}">Delete</button>
+        </div>
+      </div>`;
+  }
+
+  _editPanel() {
+    const s = this._state;
+    const f = s.form;
+    const isNew = s.editingId === '';
+
+    const opt = (val, label, cur) =>
+      `<option value="${val}" ${cur === val ? 'selected' : ''}>${label}</option>`;
+
+    const styleOpts = [opt('random', '🎲 Random (a different style each piece)', f.style)]
+      .concat(s.styles.map(st => opt(st.id, st.name, f.style)));
+    const algoOpts = [opt('auto', 'Auto (a different algorithm each piece)', f.algorithm)]
+      .concat(s.algorithms.map(a => opt(a.id, a.name, f.algorithm)));
+
+    const styleDesc = s.styles.find(st => st.id === f.style)?.description || '';
+    const algoDesc = s.algorithms.find(a => a.id === f.algorithm)?.description || '';
+
+    return `
+      <div class="edit-panel">
+        <div class="edit-header">
+          <h2>${isNew ? 'New Gallery' : 'Edit Gallery'}</h2>
+          ${this._messageBar()}
+        </div>
+        <div class="edit-body">
+
+          <div class="form-col">
+            <div class="field-group">
+              <label class="field-label">Gallery Name</label>
+              <input class="form-input" data-field="name" value="${this._esc(f.name)}" placeholder="e.g. Hallway Watercolor">
+            </div>
+
+            <div class="field-group">
+              <label class="field-label">Style</label>
+              <select class="form-select" data-field="style">${styleOpts.join('')}</select>
+              ${styleDesc ? `<div class="field-hint-block">${this._esc(styleDesc)}</div>` : ''}
+            </div>
+
+            <div class="field-group">
+              <label class="field-label">Algorithm</label>
+              <select class="form-select" data-field="algorithm">${algoOpts.join('')}</select>
+              ${algoDesc ? `<div class="field-hint-block">${this._esc(algoDesc)}</div>` : ''}
+            </div>
+
+            <div class="divider"></div>
+
+            <div class="field-row">
+              <div class="field-group">
+                <label class="field-label">Output</label>
+                <select class="form-select" data-field="output_mode">
+                  ${opt('static', 'Static PNG (e-ink safe)', f.output_mode)}
+                  ${opt('animated', 'Animated loop (LCD/OLED)', f.output_mode)}
+                </select>
+              </div>
+              <div class="field-group">
+                <label class="field-label">Density</label>
+                <select class="form-select" data-field="density">
+                  ${opt('sparse', 'Sparse', f.density)}
+                  ${opt('balanced', 'Balanced', f.density)}
+                  ${opt('rich', 'Rich', f.density)}
+                </select>
               </div>
             </div>
-          </div>
 
-          <div class="section-title">Style</div>
-          <div class="style-cards">
-            ${Object.entries(STYLE_META).map(([id, m]) => `
-              <button class="style-card ${s.style === id ? 'active' : ''}" data-style="${id}">
-                <span class="style-name">${m.label}</span>
-                <span class="style-hint">${m.hint}</span>
-              </button>`).join('')}
-          </div>
-
-          <hr class="divider">
-          <div class="section-title">Composition</div>
-          <div class="two-col">
-            <div class="form-group">
-              <label>Algorithm</label>
-              <select id="algorithm">
-                ${Object.entries(ALGO_LABELS).map(([id, label]) =>
-                  `<option value="${id}" ${s.algorithm === id ? 'selected' : ''}>${label}</option>`).join('')}
-              </select>
-            </div>
-            <div class="form-group">
-              <label>Density</label>
-              <select id="density">
-                ${['sparse', 'balanced', 'rich'].map(d =>
-                  `<option value="${d}" ${s.density === d ? 'selected' : ''}>${d[0].toUpperCase() + d.slice(1)}</option>`).join('')}
-              </select>
-            </div>
-            <div class="form-group">
-              <label>New piece</label>
-              <select id="seedMode">
-                <option value="refresh" ${s.seedMode === 'refresh' ? 'selected' : ''}>Every refresh</option>
-                <option value="hourly"  ${s.seedMode === 'hourly' ? 'selected' : ''}>Hourly</option>
-                <option value="daily"   ${s.seedMode === 'daily' ? 'selected' : ''}>Daily</option>
-                <option value="fixed"   ${s.seedMode === 'fixed' ? 'selected' : ''}>Fixed seed</option>
-              </select>
-            </div>
-            ${s.seedMode === 'fixed' ? `
-              <div class="form-group">
-                <label>Fixed seed</label>
-                <input type="number" id="seed" value="${s.seed}" min="0">
-              </div>` : ''}
-          </div>
-          <div class="form-group">
-            <label>Texture strength — ${s.textureStrength}%</label>
-            <input type="range" id="textureStrength" min="0" max="200" step="5" value="${s.textureStrength}">
-            <div class="hint">Paper grain, cotton fiber, and risograph ink distress.</div>
-          </div>
-
-          <hr class="divider">
-          <div class="section-title">Output</div>
-          <div class="two-col">
-            <div class="form-group">
-              <label>Mode</label>
-              <select id="outputMode">
-                <option value="static"   ${s.outputMode === 'static' ? 'selected' : ''}>Static PNG (e-ink safe)</option>
-                <option value="animated" ${s.outputMode === 'animated' ? 'selected' : ''}>Animated WebP loop (LCD/OLED)</option>
-              </select>
-            </div>
-          </div>
-          ${s.outputMode === 'animated' ? `
-            <div class="two-col">
-              <div class="form-group">
-                <label>Frames per loop</label>
-                <input type="number" id="frames" value="${s.frames}" min="8" max="60">
+            <div class="field-row">
+              <div class="field-group">
+                <label class="field-label">New Piece</label>
+                <select class="form-select" data-field="seed_mode">
+                  ${opt('refresh', 'Every refresh', f.seed_mode)}
+                  ${opt('hourly', 'Hourly', f.seed_mode)}
+                  ${opt('daily', 'Daily', f.seed_mode)}
+                  ${opt('fixed', 'Fixed seed', f.seed_mode)}
+                </select>
               </div>
-              <div class="form-group">
-                <label>Frame duration (ms)</label>
-                <input type="number" id="frameMs" value="${s.frameMs}" min="40" max="500" step="10">
-              </div>
+              ${f.seed_mode === 'fixed' ? `
+                <div class="field-group">
+                  <label class="field-label">Fixed Seed</label>
+                  <input class="form-input" type="number" data-field="seed" value="${f.seed}" min="0">
+                </div>` : ''}
             </div>
-            <div class="hint">Animated renders are heavier — the first render at a new size takes a few
-              seconds and is cached. Use static mode for e-ink displays.</div>` : ''}
 
-          <div class="actions">
-            <button class="btn btn-primary" id="save" ${s.saving ? 'disabled' : ''}>
-              ${s.saving ? '<span class="spinner"></span> Saving…' : 'Save Settings'}
-            </button>
+            <div class="field-group">
+              <label class="field-label">Texture Strength — ${f.texture_strength}%</label>
+              <input type="range" data-field="texture_strength" min="0" max="200" step="5" value="${f.texture_strength}">
+            </div>
+
+            ${f.output_mode === 'animated' ? `
+              <div class="field-row">
+                <div class="field-group">
+                  <label class="field-label">Frames per loop</label>
+                  <input class="form-input" type="number" data-field="frames" value="${f.frames}" min="8" max="60">
+                </div>
+                <div class="field-group">
+                  <label class="field-label">Frame duration (ms)</label>
+                  <input class="form-input" type="number" data-field="frame_ms" value="${f.frame_ms}" min="40" max="500" step="10">
+                </div>
+              </div>
+              <div class="field-hint-block">Preview below is always a static frame — the animated loop is confirmed on the display after saving.</div>
+            ` : ''}
           </div>
-          ${s.error ? `<div class="error">${s.error}</div>` : ''}
-          ${s.successMsg ? `<div class="success-msg">${s.successMsg}</div>` : ''}
-        `}
-      </div>
+
+          <div class="preview-col">
+            <div class="preview-frame">
+              ${s.previewLoading
+                ? `<div class="preview-placeholder">Rendering…</div>`
+                : s.previewUrl
+                  ? `<img class="preview-img" src="${s.previewUrl}" alt="preview">`
+                  : `<div class="preview-placeholder">Preview will appear here</div>`}
+            </div>
+            <div class="preview-size">360 × 216 preview</div>
+          </div>
+
+        </div>
+
+        <div class="edit-footer">
+          <button class="btn btn-ghost" data-action="cancel-edit">Cancel</button>
+          <button class="btn btn-primary" data-action="save-gallery" ${s.saving ? 'disabled' : ''}>
+            ${s.saving ? 'Saving…' : (isNew ? 'Create Gallery' : 'Save Changes')}
+          </button>
+        </div>
+      </div>`;
+  }
+
+  _messageBar() {
+    const m = this._state.message;
+    if (!m) return '';
+    return `<div class="message message-${m.type}">${this._esc(m.text)}</div>`;
+  }
+
+  _css() {
+    return `
+      :host { display: block; font-family: system-ui, -apple-system, sans-serif; font-size: 14px; }
+      * { box-sizing: border-box; }
+
+      .loading { padding: 32px; text-align: center; color: var(--color-text-secondary, #888); }
+
+      .panel { display: flex; flex-direction: column; gap: 16px; padding: 4px 0; }
+
+      .message { padding: 10px 14px; border-radius: 6px; font-size: 0.85rem; }
+      .message-error   { background: rgba(198,40,40,0.12); color: #e57373; border: 1px solid rgba(198,40,40,0.25); }
+      .message-success { background: rgba(0,200,81,0.10);  color: #4caf50; border: 1px solid rgba(0,200,81,0.2);  }
+
+      /* OOBE */
+      .oobe { text-align: center; padding: 36px 24px; background: var(--color-surface, #1e2428);
+        border: 1px solid var(--color-border, #2a3035); border-radius: 10px; }
+      .oobe-icon { font-size: 2rem; color: var(--color-accent, #00C851); margin-bottom: 8px; }
+      .oobe h2 { font-size: 1.2rem; margin: 0 0 14px; }
+      .oobe p { max-width: 480px; margin: 0 auto 12px; color: var(--color-text-secondary, #999); line-height: 1.6; font-size: 0.9rem; }
+      .oobe .btn-lg { margin-top: 12px; padding: 10px 24px; font-size: 0.95rem; }
+
+      .section-header { display: flex; align-items: center; justify-content: space-between; }
+      .section-header span { font-weight: 600; font-size: 0.9rem; color: var(--color-text-secondary, #888); text-transform: uppercase; letter-spacing: 0.06em; }
+
+      .gallery-card { display: flex; align-items: center; gap: 12px; padding: 12px 14px;
+        background: var(--color-surface, #1e2428); border: 1px solid var(--color-border, #2a3035); border-radius: 8px; }
+      .gallery-info { flex: 1; min-width: 0; }
+      .gallery-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .gallery-meta { font-size: 0.78rem; color: var(--color-text-secondary, #888); margin-top: 2px; }
+      .gallery-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+      .edit-panel { display: flex; flex-direction: column; height: 100%; gap: 0; }
+      .edit-header { padding-bottom: 12px; border-bottom: 1px solid var(--color-border, #2a3035); margin-bottom: 16px; }
+      .edit-header h2 { font-size: 1.1rem; font-weight: 700; margin-bottom: 8px; }
+      .edit-body { display: flex; gap: 20px; flex: 1; min-height: 0; overflow: auto; }
+      .edit-footer { display: flex; justify-content: flex-end; gap: 8px; padding-top: 16px; border-top: 1px solid var(--color-border, #2a3035); margin-top: 16px; }
+
+      .form-col { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+      .field-group { display: flex; flex-direction: column; gap: 5px; }
+      .field-row { display: flex; gap: 12px; }
+      .field-row .field-group { flex: 1; }
+      .field-label { font-size: 0.78rem; font-weight: 600; color: var(--color-text-secondary, #888); text-transform: uppercase; letter-spacing: 0.06em; }
+      .field-hint-block { font-size: 0.78rem; color: var(--color-text-tertiary, #666); line-height: 1.5; margin-top: -2px; }
+      .form-input, .form-select {
+        background: var(--color-background, #111518); border: 1px solid var(--color-border, #2a3035);
+        color: var(--color-text, #e0e0e0); border-radius: 6px; padding: 7px 10px; font-size: 0.85rem; width: 100%;
+      }
+      .form-input:focus, .form-select:focus { outline: 2px solid var(--color-accent, #00C851); outline-offset: -1px; }
+      input[type=range] { width: 100%; }
+      .divider { border: none; border-top: 1px solid var(--color-border, #2a3035); }
+
+      .preview-col { width: 340px; flex-shrink: 0; display: flex; flex-direction: column; gap: 8px; }
+      .preview-frame { background: #000; border: 1px solid var(--color-border, #2a3035); border-radius: 6px;
+        overflow: hidden; display: flex; align-items: center; justify-content: center; min-height: 200px; position: relative; }
+      .preview-img { width: 100%; height: auto; display: block; }
+      .preview-placeholder { color: var(--color-text-secondary, #555); font-size: 0.8rem; padding: 32px; text-align: center; }
+      .preview-size { font-size: 0.68rem; color: var(--color-text-tertiary, #555); text-align: center; letter-spacing: 0.05em; }
+
+      .btn { padding: 7px 14px; border-radius: 6px; font-size: 0.83rem; font-weight: 600; cursor: pointer; border: 1px solid transparent; transition: opacity .15s; }
+      .btn:disabled { opacity: .5; cursor: default; }
+      .btn-primary { background: var(--color-accent, #00C851); color: #000; }
+      .btn-primary:hover:not(:disabled) { opacity: .85; }
+      .btn-danger  { background: rgba(198,40,40,0.15); color: #e57373; border-color: rgba(198,40,40,0.3); }
+      .btn-danger:hover:not(:disabled) { background: rgba(198,40,40,0.25); }
+      .btn-ghost   { background: transparent; color: var(--color-text, #e0e0e0); border-color: var(--color-border, #2a3035); }
+      .btn-ghost:hover:not(:disabled) { background: var(--color-surface, #1e2428); }
+      .btn-sm { padding: 4px 10px; font-size: 0.76rem; }
     `;
-
-    const $ = id => this.shadowRoot.getElementById(id);
-    $('save')?.addEventListener('click', () => this._save());
-    $('shuffle')?.addEventListener('click', () =>
-      this._set({ previewSeed: Math.floor(Math.random() * 100000) }));
-    this.shadowRoot.querySelectorAll('[data-style]').forEach(btn =>
-      btn.addEventListener('click', () => this._set({ style: btn.dataset.style })));
-    $('algorithm')?.addEventListener('change', e => this._set({ algorithm: e.target.value }));
-    $('density')?.addEventListener('change', e => this._set({ density: e.target.value }));
-    $('seedMode')?.addEventListener('change', e => this._set({ seedMode: e.target.value }));
-    $('seed')?.addEventListener('input', e => { this._state.seed = e.target.value; });
-    $('textureStrength')?.addEventListener('input', e => this._set({ textureStrength: Number(e.target.value) }));
-    $('outputMode')?.addEventListener('change', e => this._set({ outputMode: e.target.value }));
-    $('frames')?.addEventListener('input', e => { this._state.frames = e.target.value; });
-    $('frameMs')?.addEventListener('input', e => { this._state.frameMs = e.target.value; });
   }
 }
 

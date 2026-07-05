@@ -867,6 +867,69 @@ def glyphrain(rng: random.Random, style: Style, w: int, h: int,
     return plates
 
 
+# ── Engine: hexgrid ──────────────────────────────────────────────────────────
+
+def _hex_points(cx: float, cy: float, r: float) -> list[tuple[float, float]]:
+    """Pointy-top hexagon vertices, r = center-to-vertex radius."""
+    return [(cx + r * math.cos(math.radians(30 + 60 * i)),
+             cy + r * math.sin(math.radians(30 + 60 * i))) for i in range(6)]
+
+
+def hexgrid(rng: random.Random, style: Style, w: int, h: int,
+            phase: float, density: float) -> list[Plate]:
+    """Honeycomb field — a pointy-top hex grid with sparse filled cells
+    and concentric hex targets.
+
+    Every cell outlines in hairline; a density-scaled fraction fill solid,
+    gently breathing in place; one or two cells carry a concentric hex
+    target motif. Breathing is a pure oscillator, so it loops seamlessly.
+    """
+    d = density * style.density_bias
+    R = min(w, h) / (rng.uniform(7.0, 10.0) * max(0.6, math.sqrt(d)))
+    dx = math.sqrt(3) * R
+    dy = 1.5 * R
+    cols = int(w / dx) + 3
+    rows = int(h / dy) + 3
+
+    line_mask, line_draw = _mask(w, h)
+    ink_masks: dict[int, Image.Image] = {}
+    ink_draws: dict[int, ImageDraw.ImageDraw] = {}
+    hairline = max(1, round(0.0016 * min(w, h)))
+    fill_p = 0.1 + 0.09 * d
+
+    centers: list[tuple[float, float, int, int]] = []
+    for row in range(rows):
+        y = -R + row * dy
+        offset = dx / 2 if row % 2 else 0.0
+        for col in range(cols):
+            x = -R + col * dx + offset
+            if -R <= x <= w + R and -R <= y <= h + R:
+                centers.append((x, y, row, col))
+
+    for x, y, row, col in centers:
+        line_draw.polygon(_hex_points(x, y, R * 0.96), outline=255, width=hairline)
+        if rng.random() < fill_p:
+            ink = rng.choice([0, 1, 2])
+            if ink not in ink_masks:
+                ink_masks[ink], ink_draws[ink] = _mask(w, h)
+            breathe = 1.0 + 0.06 * _osc(phase, ((row * 31 + col * 17) % 97) / 97)
+            ink_draws[ink].polygon(_hex_points(x, y, R * 0.82 * breathe), fill=255)
+
+    acc_mask, acc_draw = _mask(w, h)
+    n_targets = 1 if rng.random() < 0.7 else 2
+    for x, y, _, _ in rng.sample(centers, min(n_targets, len(centers))):
+        rings = rng.randint(3, 5)
+        for k in range(rings):
+            rr = R * (0.3 + 0.15 * k)
+            pts = _hex_points(x, y, rr)
+            acc_draw.line(pts + [pts[0]], fill=255, width=hairline)
+
+    plates: list[Plate] = [(ink, m, 0.95) for ink, m in ink_masks.items()]
+    plates.append((style.accent_index, acc_mask, 1.0))
+    plates.append((style.line_index, line_mask, 0.85))
+    return plates
+
+
 # ── Registry ─────────────────────────────────────────────────────────────────
 
 ENGINES: dict[str, Callable[..., list[Plate]]] = {
@@ -882,6 +945,7 @@ ENGINES: dict[str, Callable[..., list[Plate]]] = {
     "contours":     contours,
     "harmonograph": harmonograph,
     "glyphrain":    glyphrain,
+    "hexgrid":      hexgrid,
 }
 
 ENGINE_INFO: list[dict[str, str]] = [
@@ -909,6 +973,8 @@ ENGINE_INFO: list[dict[str, str]] = [
      "description": "Decaying pendulum curves in fine plotter ink"},
     {"id": "glyphrain", "name": "Glyph Rain",
      "description": "Falling streak columns — Matrix rain in phosphor"},
+    {"id": "hexgrid",   "name": "Honeycomb",
+     "description": "A hex grid field with sparse filled cells and concentric hex targets"},
 ]
 
 

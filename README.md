@@ -33,6 +33,7 @@ Six composition engines, all available in both styles (`auto` picks per piece):
 - `orbits` — Orbit Rhythm: rhythmic concentric arcs around one or two poles
 - `tatami` — Tatami Grid: recursive golden-ratio subdivision, mostly negative space
 - `beams` — Signal Beams: sharp-angle rays fanning from the frame edges
+- `hexgrid` — Honeycomb: a hex grid field with sparse filled cells and concentric hex targets
 - `interference` — Standing Waves: wavefronts from point sources weaving real moiré interference fringes; animated, the waves travel outward
 - `flora` — Quiet Meadow: abstract nature scene — layered noise hills, a low sun, swaying botanical sprigs and drifting birds
 - `truchet` — Truchet Maze: quarter-circle arc tiles weaving endless paths; animated, tiles turn in place and rewire the maze
@@ -51,6 +52,19 @@ Six composition engines, all available in both styles (`auto` picks per piece):
 
 `refresh` (new piece every display refresh) · `hourly` · `daily` ·
 `fixed` (pin one composition by seed).
+
+## Galleries
+
+A **gallery** is one named, saved configuration — style, algorithm, output
+mode, seed policy, density, texture — the plugin's sub-channel. Create as
+many as you like from the channel manager and assign different galleries
+to different programs and displays (a calm watercolor meadow in one room,
+glowing ASCII waves on another OLED). The manager shows a first-run
+explainer with a "Create Your First Gallery" button when none exist yet.
+
+`request_image` resolves which gallery to render from the caller's
+`subchannel_id` / `gallery_id` / `settings.subChannelId`, falling back to
+the first configured gallery.
 
 ## Architecture
 
