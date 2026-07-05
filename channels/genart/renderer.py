@@ -25,7 +25,7 @@ import random
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 from .engines import ENGINES, pick_engine
-from .styles import Style, get_style
+from .styles import Style, resolve_style
 
 # Supersampling is the anti-aliasing mechanism. Static renders happen once
 # per seed and can afford 2x; animated renders do frames × the work, so
@@ -54,6 +54,43 @@ def _blob_noise(rng: random.Random, w: int, h: int, cells: int) -> Image.Image:
     gh = max(2, round(cells * h / max(1, w)))
     img = _noise_image(rng, gw, gh).resize((w, h), Image.BICUBIC)
     return img.point(lambda v: (v * v) // 255)
+
+
+def _halftone(mask: Image.Image, w: int, h: int, plate_idx: int) -> Image.Image:
+    """Ben-Day dot screen — cell coverage sets the dot radius, so solid
+    fills become uniform dot fields and soft edges taper off. Each plate's
+    grid is offset slightly so overlapping colors don't stack perfectly,
+    like a real comic press."""
+    pitch = max(4, round(min(w, h) / 72))
+    cols, rows = max(1, w // pitch), max(1, h // pitch)
+    grid = mask.resize((cols, rows), Image.BOX)
+    out = Image.new("L", (w, h), 0)
+    draw = ImageDraw.Draw(out)
+    data = grid.load()
+    off = (plate_idx % 3) * pitch / 3.0
+    max_r = pitch * 0.62
+    for r in range(rows):
+        for c in range(cols):
+            v = data[c, r]
+            if v < 12:
+                continue
+            rad = max_r * (v / 255.0) ** 0.5
+            cx = c * pitch + pitch / 2 + off
+            cy = r * pitch + pitch / 2
+            draw.ellipse([cx - rad, cy - rad, cx + rad, cy + rad], fill=255)
+    return out
+
+
+def _edge_pool(mask: Image.Image, strength: float, w: int, h: int) -> Image.Image:
+    """Watercolor rim pooling — pigment settles at a wash's edge, so the
+    mask gains alpha in a band just inside its boundary. The erosion kernel
+    must be wider than the style's edge-blur softening or it never catches
+    a rim on an already-soft plate."""
+    k = max(5, round(min(w, h) * 0.028) | 1)
+    rim = ImageChops.subtract(mask, mask.filter(ImageFilter.MinFilter(k)))
+    rim = rim.filter(ImageFilter.GaussianBlur(1.5))
+    boosted = rim.point(lambda v: min(255, round(v * strength * 2.2)))
+    return ImageChops.lighter(mask, boosted)
 
 
 # ── ASCII render mode ────────────────────────────────────────────────────────
@@ -214,6 +251,10 @@ def render_frame(style: Style, algorithm: str, seed: int, w: int, h: int,
             mask = _asciify(mask, style, w, h)
         elif style.edge_blur > 0:
             mask = mask.filter(ImageFilter.GaussianBlur(style.edge_blur))
+        if style.halftone and ink_idx != style.line_index:
+            mask = _halftone(mask, w, h, plate_idx)
+        if style.edge_pool > 0:
+            mask = _edge_pool(mask, style.edge_pool, w, h)
 
         dx, dy = mat.offsets[plate_idx % _MAX_PLATES]
         if dx or dy:
@@ -257,7 +298,7 @@ def render_frame(style: Style, algorithm: str, seed: int, w: int, h: int,
 def render_static(style_id: str, algorithm: str, seed: int, w: int, h: int,
                   density: float = 1.0, texture_strength: float = 1.0) -> bytes:
     """Render a finished piece as PNG bytes (lossless — crisp on e-ink)."""
-    style = get_style(style_id)
+    style = resolve_style(style_id, seed)
     img = render_frame(style, algorithm, seed, w, h, phase=0.0, density=density,
                        texture_strength=texture_strength,
                        supersample=_supersample(w, h, animated=False))
@@ -275,7 +316,7 @@ def render_animated(style_id: str, algorithm: str, seed: int, w: int, h: int,
     with no visible seam. Materials are computed once — paper texture and
     registration error hold still while the composition moves.
     """
-    style = get_style(style_id)
+    style = resolve_style(style_id, seed)
     ss = _supersample(w, h, animated=True)
     mat = _Materials(style, seed, w, h, texture_strength)
     imgs = [

@@ -2,11 +2,15 @@ const BASE_URL = () => window.mimirServerBaseUrl || window.location.origin;
 const API = () => `${BASE_URL()}/api/channels/com.mimir.genart`;
 
 const STYLE_META = {
+  random:         { label: '🎲 Random',               hint: 'A different style with every piece' },
   wabi:           { label: 'Kyoto Bauhaus',           hint: 'Wabi-Sabi giclée · terracotta / oat / charcoal / sage' },
   constructivist: { label: "Riso Constructivist '66", hint: 'Risograph inks · mustard / teal / burnt orange / cream' },
   phosphor:       { label: 'Phosphor Terminal',       hint: 'ASCII characters · Mimir green on CRT black, scanlines + glow' },
   blueprint:      { label: 'Blueprint Cyanotype',     hint: 'Pale line work · Prussian blue drafting paper' },
   neon:           { label: 'Neon Dusk',               hint: 'Synthwave glow · pink / cyan / violet on indigo (OLED)' },
+  popart:         { label: 'Ben-Day Pop',             hint: 'Comic-press dots · cadmium red / yellow / blue + black line' },
+  watercolor:     { label: 'Morning Watercolor',      hint: 'Bleeding washes · rose / cerulean / ochre on cold-press' },
+  deco:           { label: 'Gilded Deco',             hint: 'Gold leaf + champagne on warm black lacquer' },
 };
 
 const ALGO_LABELS = {

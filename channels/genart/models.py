@@ -33,7 +33,7 @@ class Settings(SettingsMixin):
         if not isinstance(data, dict):
             return cls()
         s: Settings = super().from_dict(data)  # type: ignore[assignment]
-        if s.style not in STYLES:
+        if s.style != "random" and s.style not in STYLES:
             s.style = "wabi"
         if s.algorithm != "auto" and s.algorithm not in ENGINES:
             s.algorithm = "auto"

@@ -12,6 +12,12 @@ Pillow + NumPy. No external APIs, no keys, works offline.
 | **Phosphor Terminal** (`phosphor`) | Every element rebuilt from ASCII characters on a near-black CRT — a glyph density ramp in glowing Mimir green, with scanlines and phosphor bloom. |
 | **Blueprint Cyanotype** (`blueprint`) | Draftsman's cyanotype — pale washes and near-white line work on deep Prussian blue paper with brush dropout and sun-faded vignette. |
 | **Neon Dusk** (`neon`) | Synthwave — hot pink, electric cyan and violet light-forms blooming on deep indigo. Made for OLED; pairs well with animated output. |
+| **Ben-Day Pop** (`popart`) | Comic-press pop art — primary fills printed as Ben-Day dot fields under solid black line work, with newsstand plate misregistration. |
+| **Morning Watercolor** (`watercolor`) | Translucent washes with wet bleeding edges that pool darker at their rims, pigment granulation, cold-press paper tooth. |
+| **Gilded Deco** (`deco`) | Art Deco nocturne — gold leaf, brass and champagne glowing on warm black lacquer with hand-gilding mottle. |
+
+Set style to **`random`** to get a different style with every piece (the
+pick is seed-stable, so a fixed seed always reproduces the same artwork).
 
 Light-emitting styles (`phosphor`, `blueprint`, `neon`) composite with a
 *screen* blend (light adds up) instead of the print styles' transmittance

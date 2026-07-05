@@ -21,7 +21,7 @@ from fastapi.responses import JSONResponse, Response
 
 from .engines import ENGINE_INFO, pick_engine
 from .models import Settings
-from .styles import STYLES
+from .styles import STYLES, resolve_style
 from . import renderer as _renderer
 
 logger = logging.getLogger("mimir.channels.genart")
@@ -112,7 +112,7 @@ class GenArtChannel:
 
         import random as _random
         engine_id = pick_engine(s.algorithm, _random.Random(seed))
-        style = STYLES[s.style]
+        style = resolve_style(s.style, seed)
         entry = {
             "bytes":        data,
             "content_type": content_type,
@@ -121,6 +121,7 @@ class GenArtChannel:
             "description":  f"{style.name} — {engine_id} #{seed}",
             "seed":         seed,
             "engine":       engine_id,
+            "style":        style.id,
             "render_ms":    round((time.time() - started) * 1000),
         }
         return entry
@@ -183,7 +184,7 @@ class GenArtChannel:
             "description":         entry["description"],
             "cache_hit":           hit,
             "metadata": {
-                "style":     self.settings.style,
+                "style":     entry.get("style", self.settings.style),
                 "engine":    entry["engine"],
                 "seed":      entry["seed"],
                 "animated":  entry["format"] == "webp",
@@ -270,7 +271,7 @@ class GenArtChannel:
             w = max(64, min(_PREVIEW_MAX, width))
             h = max(64, min(_PREVIEW_MAX, height))
             s = self.settings
-            style_id = style if style in STYLES else s.style
+            style_id = style if (style in STYLES or style == "random") else s.style
             algo = algorithm or s.algorithm
             loop = asyncio.get_event_loop()
             try:

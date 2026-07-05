@@ -35,6 +35,16 @@ def test_animated_render_is_looping_webp():
     assert img.size == (160, 100)
 
 
+def test_random_style_varies_by_seed_but_is_stable():
+    from genart.styles import resolve_style
+    picked = {resolve_style("random", seed).id for seed in range(40)}
+    assert len(picked) > 3, "random style should span multiple styles"
+    assert resolve_style("random", 7).id == resolve_style("random", 7).id
+    a = renderer.render_static("random", "arches", seed=7, w=160, h=100)
+    b = renderer.render_static("random", "arches", seed=7, w=160, h=100)
+    assert a == b
+
+
 def test_styles_produce_distinct_output():
     a = renderer.render_static("wabi", "tatami", seed=9, w=200, h=120)
     b = renderer.render_static("constructivist", "tatami", seed=9, w=200, h=120)

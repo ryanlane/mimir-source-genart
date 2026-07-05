@@ -42,6 +42,8 @@ class Style:
     ascii_ramp: str = " .:-=+*#%@"       # ascii mode: glyph density ramp, sparse → solid
     glow: float = 0.0                    # 0..1 bloom for light-emitting styles
     scanlines: float = 0.0               # 0..1 CRT scanline strength
+    halftone: bool = False               # Ben-Day dots on fill plates (pop art)
+    edge_pool: float = 0.0               # 0..1 watercolor rim darkening
 
 
 STYLES: dict[str, Style] = {
@@ -185,8 +187,102 @@ STYLES: dict[str, Style] = {
         glow=0.55,
         scanlines=0.12,
     ),
+    "popart": Style(
+        id="popart",
+        name="Ben-Day Pop",
+        description=(
+            "Comic-press pop art — saturated primary fills printed as "
+            "Ben-Day dot fields under solid black line work, with the "
+            "slight plate misregistration of a fast newsstand press."
+        ),
+        paper=(0xF7, 0xF3, 0xE8),                 # warm newsprint white
+        inks=[
+            (0xE2, 0x3A, 0x2E),                   # cadmium red
+            (0xF7, 0xC9, 0x48),                   # process yellow
+            (0x2B, 0x6C, 0xB0),                   # process blue
+            (0x1A, 0x1A, 0x1A),                   # solid black (lines/accent)
+        ],
+        accent_index=3,
+        line_index=3,
+        edge_blur=0.3,
+        ink_opacity=0.95,
+        registration_jitter=0.004,
+        coverage_noise=0.1,
+        grain=0.4,
+        fiber=0.15,
+        vignette=0.12,
+        density_bias=1.0,
+        halftone=True,
+    ),
+    "watercolor": Style(
+        id="watercolor",
+        name="Morning Watercolor",
+        description=(
+            "Translucent washes on cold-press paper — soft bleeding edges "
+            "that pool darker at their rims, pigment granulation, and the "
+            "tooth of heavyweight cotton. Quiet, luminous, unhurried."
+        ),
+        paper=(0xF9, 0xF6, 0xEF),                 # cold-press white
+        inks=[
+            (0xC9, 0x7B, 0x84),                   # rose madder
+            (0x7F, 0xB4, 0xC9),                   # cerulean
+            (0xD9, 0xB2, 0x6A),                   # yellow ochre
+            (0x4A, 0x55, 0x68),                   # Payne's gray (lines/accent)
+        ],
+        accent_index=3,
+        line_index=3,
+        edge_blur=3.5,                            # wet-on-wet bleed
+        ink_opacity=0.68,
+        registration_jitter=0.0,
+        coverage_noise=0.22,                      # pigment granulation
+        grain=0.55,
+        fiber=0.5,
+        vignette=0.3,
+        density_bias=0.85,
+        edge_pool=0.75,
+    ),
+    "deco": Style(
+        id="deco",
+        name="Gilded Deco",
+        description=(
+            "Art Deco nocturne — gold leaf, brass and champagne forms "
+            "glowing softly on warm black lacquer, with the mottle of "
+            "hand-applied gilding. Opulent on OLED, striking on any wall."
+        ),
+        paper=(0x14, 0x12, 0x0E),                 # warm lacquer black
+        inks=[
+            (0xD9, 0xB4, 0x4A),                   # gold leaf
+            (0x9C, 0x7A, 0x2F),                   # deep brass
+            (0xF0, 0xDF, 0xA8),                   # champagne
+            (0xF5, 0xEC, 0xD7),                   # ivory (lines/accent)
+        ],
+        accent_index=3,
+        line_index=3,
+        edge_blur=0.5,
+        ink_opacity=0.92,
+        registration_jitter=0.0,
+        coverage_noise=0.22,                      # gilding mottle
+        grain=0.45,
+        fiber=0.0,
+        vignette=0.45,
+        density_bias=0.9,
+        blend="screen",
+        glow=0.25,
+    ),
 }
 
 
 def get_style(style_id: str) -> Style:
     return STYLES.get(style_id, STYLES["wabi"])
+
+
+def resolve_style(style_id: str, seed: int) -> Style:
+    """Resolve a style setting to a concrete Style.
+
+    'random' picks per-seed (stable for a given piece, different across
+    pieces) — the derived RNG is separate from the composition RNG so the
+    same seed produces the same composition in every style."""
+    if style_id == "random":
+        import random
+        return STYLES[random.Random(seed ^ 0x57E1E5).choice(sorted(STYLES))]
+    return get_style(style_id)
