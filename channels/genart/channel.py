@@ -83,9 +83,10 @@ class GenArtChannel:
 
     # ── Rendering ─────────────────────────────────────────────────────────
 
-    def _render_sync(self, gallery: Gallery, seed: int, w: int, h: int) -> Dict[str, Any]:
+    def _render_sync(self, gallery: Gallery, seed: int, w: int, h: int,
+                     animated: bool) -> Dict[str, Any]:
         started = time.time()
-        if gallery.output_mode == "animated":
+        if animated:
             data = _renderer.render_animated(
                 gallery.style, gallery.algorithm, seed, w, h,
                 frames=gallery.frames, frame_ms=gallery.frame_ms,
@@ -114,9 +115,13 @@ class GenArtChannel:
         }
         return entry
 
-    def _cache_key(self, gallery: Gallery, seed: int, w: int, h: int) -> str:
+    def _cache_key(self, gallery: Gallery, seed: int, w: int, h: int, animated: bool) -> str:
+        # Keyed on the *effective* mode: an animated gallery serves static
+        # renders to displays that report supports_animation=false, and both
+        # variants may be cached side by side.
+        mode = "animated" if animated else "static"
         return "|".join(str(v) for v in (
-            gallery.id, seed, w, h, gallery.style, gallery.algorithm, gallery.output_mode,
+            gallery.id, seed, w, h, gallery.style, gallery.algorithm, mode,
             gallery.density, gallery.texture_strength, gallery.frames, gallery.frame_ms,
         ))
 
@@ -143,8 +148,17 @@ class GenArtChannel:
         res = settings_block.get("resolution", [800, 480])
         width, height = int(res[0]), int(res[1])
 
+        # Capability negotiation: displays report whether their panel can
+        # play animated loops. An explicit False downgrades an animated
+        # gallery to a static render of the same piece; absent/None means
+        # unknown, and the gallery's configured mode is honored.
+        animated = gallery.output_mode == "animated"
+        if animated and settings_block.get("supports_animation") is False:
+            animated = False
+            logger.debug("[genart] display reports supports_animation=false — serving static render")
+
         seed = self._current_seed(gallery)
-        cache_key = self._cache_key(gallery, seed, width, height)
+        cache_key = self._cache_key(gallery, seed, width, height, animated)
         cached = self._image_cache.get(cache_key)
         if cached:
             return self._build_response(cached, width, height, hit=True)
@@ -157,7 +171,8 @@ class GenArtChannel:
                 return self._build_response(cached, width, height, hit=True)
             loop = asyncio.get_event_loop()
             try:
-                entry = await loop.run_in_executor(None, self._render_sync, gallery, seed, width, height)
+                entry = await loop.run_in_executor(
+                    None, self._render_sync, gallery, seed, width, height, animated)
             except Exception as exc:
                 logger.exception("[genart] render failed: %s", exc)
                 return {"success": False, "error": f"render failed: {exc}"}

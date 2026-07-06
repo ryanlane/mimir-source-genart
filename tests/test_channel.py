@@ -137,6 +137,53 @@ def test_request_image_animated_returns_webp(tmp_path):
     assert result["metadata"]["animated"] is True
 
 
+def test_animated_gallery_downgrades_when_display_cannot_animate(tmp_path):
+    ch = _make_channel(tmp_path)
+    gallery = _make_gallery(ch, seed_mode="fixed", seed=7,
+                            output_mode="animated", frames=8)
+    result = asyncio.run(ch.request_image({
+        "subchannel_id": gallery.id,
+        "settings": {"resolution": [160, 100], "supports_animation": False},
+    }))
+    assert result["success"] is True
+    assert result["content_type"] == "image/png"
+    assert result["metadata"]["animated"] is False
+
+
+def test_animated_gallery_stays_animated_when_capability_unknown_or_true(tmp_path):
+    ch = _make_channel(tmp_path)
+    gallery = _make_gallery(ch, seed_mode="fixed", seed=7,
+                            output_mode="animated", frames=8)
+    for settings in ({"resolution": [160, 100]},
+                     {"resolution": [160, 100], "supports_animation": True}):
+        result = asyncio.run(ch.request_image({
+            "subchannel_id": gallery.id, "settings": settings,
+        }))
+        assert result["content_type"] == "image/webp"
+        assert result["metadata"]["animated"] is True
+
+
+def test_downgraded_and_animated_renders_cache_separately(tmp_path):
+    ch = _make_channel(tmp_path)
+    gallery = _make_gallery(ch, seed_mode="fixed", seed=7,
+                            output_mode="animated", frames=8)
+    anim = asyncio.run(ch.request_image({
+        "subchannel_id": gallery.id, "settings": {"resolution": [160, 100]},
+    }))
+    static = asyncio.run(ch.request_image({
+        "subchannel_id": gallery.id,
+        "settings": {"resolution": [160, 100], "supports_animation": False},
+    }))
+    assert anim["content_type"] == "image/webp"
+    assert static["content_type"] == "image/png"
+    # Both cached independently — repeat requests hit their own entries.
+    anim2 = asyncio.run(ch.request_image({
+        "subchannel_id": gallery.id, "settings": {"resolution": [160, 100]},
+    }))
+    assert anim2["cache_hit"] is True
+    assert anim2["content_type"] == "image/webp"
+
+
 def test_request_image_caches_fixed_seed(tmp_path):
     ch = _make_channel(tmp_path)
     gallery = _make_gallery(ch, seed_mode="fixed", seed=9)
