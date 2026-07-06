@@ -2,7 +2,7 @@
   "id": "com.mimir.genart",
   "name": "Generative Art",
   "description": "Gallery-grade algorithmic art rendered locally — no external APIs. Eight print styles across thirteen composition algorithms, saved as named galleries you can assign to different programs and displays, with static PNG output for e-ink and seamless animated WebP loops for LCD/OLED displays.",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "type": "embedded",
   "entry_point": "channel.py",
   "class_name": "GenArtChannel",

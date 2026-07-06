@@ -15,6 +15,8 @@ Pillow + NumPy. No external APIs, no keys, works offline.
 | **Ben-Day Pop** (`popart`) | Comic-press pop art — primary fills printed as Ben-Day dot fields under solid black line work, with newsstand plate misregistration. |
 | **Morning Watercolor** (`watercolor`) | Translucent washes with wet bleeding edges that pool darker at their rims, pigment granulation, cold-press paper tooth. |
 | **Gilded Deco** (`deco`) | Art Deco nocturne — gold leaf, brass and champagne glowing on warm black lacquer with hand-gilding mottle. |
+| **Process CMYK** (`cmyk`) | Pure process printing — cyan/magenta/yellow overprint on white stock, mixing subtractive secondaries and stacking toward black, with press misregistration. |
+| **Additive RGB** (`rgb`) | Pure light — red/green/blue primaries on true black, mixing additive secondaries and burning to white where all three align. |
 
 Set style to **`random`** to get a different style with every piece (the
 pick is seed-stable, so a fixed seed always reproduces the same artwork).

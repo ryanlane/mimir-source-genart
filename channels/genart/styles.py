@@ -269,6 +269,62 @@ STYLES: dict[str, Style] = {
         blend="screen",
         glow=0.25,
     ),
+    "cmyk": Style(
+        id="cmyk",
+        name="Process CMYK",
+        description=(
+            "Pure process printing — cyan, magenta and yellow inks "
+            "overprinted on bright white stock. Overlaps mix true "
+            "subtractive secondaries (red, green, blue) and stack toward "
+            "black, with the slight misregistration of a real press run."
+        ),
+        paper=(0xFA, 0xFA, 0xF7),                 # bright white stock
+        inks=[
+            (0x00, 0xAE, 0xEF),                   # process cyan
+            (0xEC, 0x00, 0x8C),                   # process magenta
+            (0xFF, 0xF2, 0x00),                   # process yellow
+            (0x1A, 0x1A, 0x1A),                   # key black (lines/accent)
+        ],
+        accent_index=3,
+        line_index=3,
+        edge_blur=0.3,
+        ink_opacity=0.9,
+        registration_jitter=0.005,                # visible process misregistration
+        coverage_noise=0.08,
+        grain=0.3,
+        fiber=0.0,
+        vignette=0.1,
+        density_bias=1.0,
+    ),
+    "rgb": Style(
+        id="rgb",
+        name="Additive RGB",
+        description=(
+            "Pure light — red, green and blue primaries beamed onto true "
+            "black. Overlaps mix additive secondaries (cyan, magenta, "
+            "yellow) and burn to white where all three align, with a soft "
+            "chromatic fringe where the channels drift."
+        ),
+        paper=(0x00, 0x00, 0x04),                 # true black
+        inks=[
+            (0xFF, 0x2A, 0x2A),                   # light red
+            (0x2A, 0xFF, 0x5A),                   # light green
+            (0x30, 0x56, 0xFF),                   # light blue
+            (0xF0, 0xF4, 0xFF),                   # white (lines/accent)
+        ],
+        accent_index=3,
+        line_index=3,
+        edge_blur=0.6,
+        ink_opacity=0.92,
+        registration_jitter=0.003,                # chromatic fringe
+        coverage_noise=0.1,
+        grain=0.25,
+        fiber=0.0,
+        vignette=0.3,
+        density_bias=1.0,
+        blend="screen",
+        glow=0.3,
+    ),
 }
 
 
